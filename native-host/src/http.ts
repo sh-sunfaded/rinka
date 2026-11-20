@@ -4,7 +4,7 @@
  * - Bearer トークン必須（定数時間比較）。不一致は401（tokenMatchesをexportしてテストも見る）
  * - Origin 絡みの防御: Originヘッダが付いていて localhost 系でなければ403
  *   （ブラウザ以外のMCPクライアントは通常Originを送らない）
- * - セッション: initialize でのみ発行（Mcp-Session-Idヘッダ）、以後必須・不明なら404
+ * - セッションレス: state はこのプロセス内に持たない（鍵はBearer一つで十分・保守点減）
  * - ボディ上限 1MB、超過は413
  * - JSONパース失敗は -32700 を 400 で返す
  * - 通知（応答null）は 202
@@ -45,12 +45,11 @@ function readBearer(req: { headers: Record<string, string | string[] | undefined
   return h.slice("Bearer ".length).trim();
 }
 
-function send(res: import("node:http").ServerResponse, status: number, body: unknown, extra?: Record<string, string>): void {
+function send(res: import("node:http").ServerResponse, status: number, body: unknown): void {
   const json = body === null || body === undefined ? "" : JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
-    ...extra,
   });
   res.end(json);
 }
@@ -64,7 +63,6 @@ export interface RunningServer {
 export async function startServer(deps: HttpDeps): Promise<RunningServer> {
   const { config } = deps;
   const toolDeps: ToolDeps = { config, audit: deps.audit, backend: deps.backend };
-  const sessions = new Set<string>();
 
   const server = createServer((req, res) => {
     void (async () => {
@@ -109,29 +107,9 @@ export async function startServer(deps: HttpDeps): Promise<RunningServer> {
           return;
         }
 
-        // ---- セッション ----
-        const sessionId = Array.isArray(req.headers["mcp-session-id"]) ? req.headers["mcp-session-id"][0] : req.headers["mcp-session-id"];
-        const isInitialize =
-          typeof parsed === "object" && parsed !== null && (parsed as Record<string, unknown>).method === "initialize";
-        let extra: Record<string, string> | undefined;
-        if (isInitialize) {
-          const sid = crypto.randomUUID();
-          sessions.add(sid);
-          extra = { "Mcp-Session-Id": sid };
-        } else {
-          if (typeof sessionId !== "string" || !sessions.has(sessionId)) {
-            send(res, 404, { error: "rinka: 未知のセッションです（先に initialize してください）" });
-            return;
-          }
-        }
-
-        // ---- 応答 ----
+        // ---- 応答（セッションレス。応答null=通知は202） ----
         const response = await handleRpcMessage(parsed, toolDeps);
-        if (response === null) {
-          send(res, 202, null, extra);
-          return;
-        }
-        send(res, 200, response, extra);
+        send(res, response === null ? 202 : 200, response);
       } catch (e) {
         const message = e instanceof Error ? e.message : String(e);
         if (!res.headersSent) {
@@ -161,7 +139,7 @@ export async function startServer(deps: HttpDeps): Promise<RunningServer> {
             try {
               server.closeAllConnections();
             } catch {
-              /* Node 18.2未満では無い */
+              /* Node 18.2未満には無い */
             }
             server.close(() => r());
           }),
@@ -169,3 +147,4 @@ export async function startServer(deps: HttpDeps): Promise<RunningServer> {
     });
   });
 }
+

@@ -71,14 +71,10 @@ export function isKnownTool(name: string): boolean {
   return TOOL_NAMES.has(name);
 }
 
-/** バイト上限で文字列を切る（UTF-8境界で切れた分は諦めてsliceで安全側に）。 */
+/** バイト上限で切る。切れ目がUTF-8文字の途中なら末尾はU+FFFDになるので、それは捨てる（安全側）。 */
 function truncateBytes(s: string, maxBytes: number): string {
-  if (Buffer.byteLength(s, "utf8") <= maxBytes) return s;
-  let out = s;
-  while (Buffer.byteLength(out, "utf8") > maxBytes) {
-    out = out.slice(0, Math.floor(out.length / 2));
-  }
-  return out;
+  const b = Buffer.from(s, "utf8");
+  return b.length <= maxBytes ? s : b.subarray(0, maxBytes).toString("utf8").replace(/\uFFFD$/, "");
 }
 
 /** ページ本文を信頼できないデータとして包む（家規7）。 */
@@ -102,7 +98,7 @@ export async function callTool(name: string, rawArgs: unknown, deps: ToolDeps): 
     }
     deps.audit.record("read_tab", { tabId });
     const r = await deps.backend.readTab(tabId);
-    // host側の最終防衛: バイト上限を強制（backend側のmaxCharsは第一防衛）
+    // バイト上限の唯一の強制点（ページ内では固定100k字スライスの安全網のみ）
     return { tab: r.tab, content: wrapUntrusted(truncateBytes(r.text, deps.config.readMaxBytes)) };
   }
 

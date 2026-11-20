@@ -28,7 +28,7 @@ async function main(): Promise<void> {
     process.stdout.write(encodeNativeFrame(JSON.stringify(o)));
   };
 
-  const backend = new AddonBackend(send, config);
+  const backend = new AddonBackend(send);
   const reader = new NativeReader();
 
   process.stdin.on("data", (chunk: Buffer) => {
@@ -56,13 +56,6 @@ async function main(): Promise<void> {
   process.stdin.on("error", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));
   process.on("SIGINT", () => shutdown(0));
-  process.on("exit", () => {
-    try {
-      running.server.close();
-    } catch {
-      /* 既に閉じている */
-    }
-  });
 }
 
 main().catch((e) => {

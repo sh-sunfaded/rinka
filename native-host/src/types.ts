@@ -24,7 +24,7 @@ export interface Backend {
   listTabs(): Promise<{ tabs: TabInfo[] }>;
   /** 指定タブの本文（innerText・maxCharsはbackend側で計算済み）。 */
   readTab(tabId: number): Promise<{ tab: TabInfo; text: string }>;
-  /** 指定タブのPNG（base64・chunk合成済み）。 */
+  /** 指定タブのPNG（base64・1メッセージで受ける）。 */
   screenshot(tabId: number): Promise<{ tab: TabInfo; base64: string }>;
   /** 履歴検索（browser.history API 経由のみ・新しい順）。 */
   searchHistory(query: string, limit: number): Promise<HistoryRow[]>;

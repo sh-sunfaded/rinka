@@ -2,8 +2,8 @@
  * rinka native-host/src/native.ts — Native Messaging のフレーミング。
  *
  * Firefox仕様: stdout/stdin は「4byte リトルエンディアン uint32 長さ前置き + UTF-8 JSON」。
- * 1フレーム上限は32MB（家規: 巨大データは512KB chunkで流すので上限 imposed は守られないはず。
- * 超えたら壊れた相手と見做して拒否）。
+ * 1フレーム上限は32MB（screenshotも1メッセージで流す。これを超える相手は
+ * 壊れた相手と見做して拒否）。
  */
 
 export const NATIVE_FRAME_MAX = 32 * 1024 * 1024;
@@ -28,7 +28,7 @@ export class NativeReader {
     while (this.buf.length >= 4) {
       const len = this.buf.readUInt32LE(0);
       if (len > NATIVE_FRAME_MAX) {
-        throw new Error(`rinka: フレーム長${len}が32MB上限を超えます（壊れた相手と拒否）`);
+        throw new Error(`rinka: フレーム長${len}が32MB上限を超えます（壊れた相手と見做して拒否）`);
       }
       if (this.buf.length < 4 + len) break; // まだ未完成。続きを待つ
       out.push(this.buf.subarray(4, 4 + len).toString("utf8"));

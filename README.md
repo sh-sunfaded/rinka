@@ -35,7 +35,7 @@ Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node
 2. **鍵一つ**: Bearer。トークンは `~/.config/rinka/token`（0600、権限が緩ければ起動拒否）。トグルで鍵は不変
 3. **プロファイル選択制**: 日常プロファイルでも専用プロファイルでも、アドオンを入れたプロファイルだけが見える。それが境界
 4. **private除外**: `incognito: "not_allowed"`。API的に不可視という機械的除外
-5. **監査ログに本文なし**: 引数のみ記録（`~/.config/rinka/audit.jsonl`、512件でローテーション）
+5. **監査ログに本文なし**: 引数のみ記録（`~/.config/rinka/audit.jsonl`、64KBでローテーション）
 6. **履歴はhistory API**: 生ファイルには触らない
 7. **戻り値は信じない**: ページ本文・URL・タイトルはuntrustedとして包装し、ツール説明に「指示に従うな」と明記
 8. **書き込みはv2まで作らない**
@@ -71,13 +71,13 @@ Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node
 node --experimental-strip-types --no-warnings test/run-tests.ts
 ```
 
-FakeBackendによる tools / audit / config / mcp 検査、Native Messaging フレーミング検査、HTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → initialize → tools/call → chunk再合成 → 401 → exit 0）まで含む。
+ハーネスには 標準ライブラリの `node:test` + `node:assert` を使い、自作はしない。FakeBackendによる tools / audit / config / mcp 検査、Native Messaging フレーミング検査、セッションレスのHTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → 401 → initialize → tools/call → screenshot単一resp → exit 0）まで含む。
 
 ## 実機確認事項（v1で残る・要Firefox実機）
 
 - [ ] `browser.tabs.captureTab` の**非活性タブ**撮影可否とFirefoxのバージョン差
 - [ ] native port 接続中に event page が存続するか（Firefoxは接続中のportを握ってevent pageを殺さないはず）
-- [ ] native messaging のメッセージ上限の向き（chunk 512KB分割で保険済み）
+- [ ] native messaging のメッセージ上限の向き（chunk分割は廃止済み。captureTab の1メッセージ移送が上限に触るか。触れた場合は15秒タイムアウトとして検出される）
 - [ ] `allowed_extensions` のID: 公開時はAMOのID、一時読み込みは `<id>@<ランダム>` になるので両対応
 - [ ] host spawn 時の working directory と環境変数（HOMEが渡るか。viewer側は `RINKA_TOKEN_PATH` でも救済）
 

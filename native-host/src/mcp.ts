@@ -3,7 +3,8 @@
  * HTTP の素 (http.ts) と分離。ここは純粋に「1メッセージ → 1応答オブジェクト or null」。
  *
  * - initialize / ping / tools/list / tools/call
- * - resources/list・prompts/list は空リストの stub
+ * - resources・prompts は未サポート（能力は initialize で tools のみ表明。
+ *   呼ばれても -32601。空stubは返さない）
  * - 通知（id無し）は null（HTTP層が202を返す）
  * - エラー: -32600 (無効リクエスト) / -32601 (メソッドなし) / -32602 (引数不正)
  *   パース失敗 -32700 はJSON.parseを扱うhttp.ts側。
@@ -93,16 +94,6 @@ export async function handleRpcMessage(raw: unknown, deps: ToolDeps): Promise<Rp
           isError: true,
         });
       }
-    }
-
-    if (method === "resources/list") {
-      return ok(id, { resources: [] });
-    }
-    if (method === "resources/templates/list") {
-      return ok(id, { resourceTemplates: [] });
-    }
-    if (method === "prompts/list") {
-      return ok(id, { prompts: [] });
     }
 
     return err(id, JSONRPC_ERRORS.METHOD_NOT_FOUND, `rinka: サポートしないメソッドです: ${method}`);
