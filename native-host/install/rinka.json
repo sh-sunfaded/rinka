@@ -1,0 +1,7 @@
+{
+  "name": "rinka",
+  "description": "rinka: 自身のFirefoxを読み取り専用でVibe MCPに繋ぐnative host",
+  "path": "/replace/me/rinka/native-host/install/rinka-host.sh",
+  "type": "stdio",
+  "allowed_extensions": ["rinka@example.invalid"]
+}
