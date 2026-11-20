@@ -25,7 +25,7 @@ export interface HttpDeps {
 }
 
 const BODY_MAX = 1024 * 1024;
-const LOCAL_ORIGIN = /^https?:\\/\\/(localhost|127\\.0\\.0\\.1|\\[::1\\])(:\\d+)?$/i;
+const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 /** 定数時間比較（長さが違っても速攻で抜けないよう、自身と比較してタイミングを均す）。 */
 export function tokenMatches(received: string | undefined, expected: string): boolean {

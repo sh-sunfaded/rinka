@@ -80,6 +80,7 @@ function setBadge(on) {
   browser.action.setBadgeText({ text: on ? "ON" : "" });
   if (on) browser.action.setBadgeBackgroundColor({ color: "#b45309" });
 }
+
 async function onPortMessage(m) {
   if (!m || typeof m !== "object") return;
   if (m.t === "ready") {
