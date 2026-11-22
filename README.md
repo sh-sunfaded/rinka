@@ -82,13 +82,13 @@ bash tools/field-test.sh              # initialize → 4ツール → 401 → �
 SKIP_IDLE=1 bash tools/field-test.sh  # 30秒放置（event page観察）を飛ばす
 ```
 
-## 実機確認事項（v1で残る・要Firefox実機）
+## 実機確認事項（2026-11-22 実機検収: 全点解決）
 
 - [x] native port 接続中に event page が存続するか（2026-11-22 実機: 30秒放置→ping応答OK）
 - [x] `allowed_extensions` のID一致（一時読み込みでも manifest の `gecko.id` が使われた。connectNative接続済み）
 - [x] host spawn 時の working directory と環境変数（HOME 経由でトークン読取OK）
-- [ ] `browser.tabs.captureTab` の**非活性タブ**撮影可否（host権限の許可後に再測。未許可の間はFirefox MV3がAPIをnamespaceに生やさない: 2026-11-22 実機で確認）
-- [ ] native messaging のメッセージ上限の向き（screenshotは権限許可後に実測。触れた場合は15秒タイムアウトとして検出される）
+- [x] `browser.tabs.captureTab` の**非活性タブ**撮影可否（2026-11-22 実機: 非活性タブも撮影OK。活性321,644字・非活性18,332字）
+- [x] native messaging のメッセージ上限の向き（2026-11-22 実機: 活性screenshot 321,644字≈241,233B を1メッセージで移送OK。512KB チャンク分割は保険として維持）
 
 ## v2以降の構想（今は作らない）
 
