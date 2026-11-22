@@ -73,6 +73,13 @@ node --experimental-strip-types --no-warnings test/run-tests.ts
 
 ハーネスには 標準ライブラリの `node:test` + `node:assert` を使い、自作はしない。FakeBackendによる tools / audit / config / mcp 検査、Native Messaging フレーミング検査、セッションレスのHTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → 401 → initialize → tools/call → screenshot単一resp → exit 0）まで含む。
 
+実機の疎通・観察点は `tools/field-test.sh` に一括化してある（要 curl + jq）:
+
+```sh
+bash tools/field-test.sh              # initialize → 4ツール → 401 → 非活性撮影 → 放置 → 監査 → OFF確認
+SKIP_IDLE=1 bash tools/field-test.sh  # 30秒放置（event page観察）を飛ばす
+```
+
 ## 実機確認事項（v1で残る・要Firefox実機）
 
 - [ ] `browser.tabs.captureTab` の**非活性タブ**撮影可否とFirefoxのバージョン差
