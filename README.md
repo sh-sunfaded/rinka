@@ -15,7 +15,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 ```
 
 - **トグル = プロセス管理**。ON: アドオンが `connectNative("rinka")` → Firefoxがhostをspawn → hostが `127.0.0.1:8765/mcp` を開き `{t:"ready", port}` を返す。OFF: `port.disconnect()` → Firefoxがhostをkill → リスナー消滅。「露出は使用時のみ」を手順でなくOSが強制する。
-- READ→WRITEはプロセスを増やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
+- READ→WRITEはプロセスを增やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
 - ページ読み取りは innerText（依存ゼロ・SPA対応）。履歴は `browser.history` API のみで、生の `places.sqlite` には触らない。
 - privateウィンドウは `incognito: "not_allowed"` によりアドオンから機械的に不可視。
 
@@ -113,7 +113,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 5. **READする**: ツールバーのrinkaアイコンをクリック。バッジ `ON`（琥珀）。もう1回クリックで `W`（赤）＝WRITE。
 
-6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。
+6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。リモート（Vibe Workウェブ版）から繋く場合は `tailscale funnel 8765` でhttps化したURL `https://<tailnet>.ts.net/mcp` を使い、用が済んだら Funnel を閉じる（露出は使用時のみ）。
 
 ## テスト
 
@@ -123,7 +123,7 @@ node --experimental-strip-types --no-warnings test/run-tests.ts
 
 ハーネスには 標準ライブラリの `node:test` + `node:assert` を使い、自作はしない。35→47テスト: FakeBackendによる tools（v2書込み14本のmodeガード・引数検査・監査値無し検査を含む）/ audit（writeタグ・プリミ配列通過）/ config（boolStrict・URL allowlist）/ mcp / Native Messaging フレーミング / セッションレスHTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → cfg → 401 → initialize → tools/call → READ時書込み拒否 → `{t:"mode"}` 受信 → WRITE書込み往復 → exit 0）まで含む。
 
-実機の疎通・観察点は `tools/field-test.sh` に一括化してある（要 curl + jq）:
+実環境の疎通・観察点は `tools/field-test.sh` に一括化してある（要 curl + jq）:
 
 ```sh
 bash tools/field-test.sh              # initialize → 14ツール → 401 → 撮影 → 放置 → 監査 → READ時拒否
@@ -135,9 +135,9 @@ WRITE自動落ちの観察は `RINKA_WRITE_TIMEOUT_SECONDS=20` でFirefoxを起�
 
 検査URLが到達不能な環境では `RINKA_FT_URL` / `RINKA_FT_URL2` / `RINKA_FT_FORM_URL` で差し替えられる（既定は example.com / example.org / httpbin.org）。
 
-## 実機確認事項
+## 実環境確認事項
 
-v1.1.1（2026-11-22 実機検収: 全点解決）:
+v1.1.1（2026-11-22 実環境検収: 全点解決）:
 
 - [x] native port 接続中に event page が存続するか（30秒放置→ping応答OK）
 - [x] `allowed_extensions` のID一致（一時読み込みでも manifest の `gecko.id` が使われた。connectNative接続済み）
@@ -146,7 +146,7 @@ v1.1.1（2026-11-22 実機検収: 全点解決）:
 - [x] native messaging のメッセージ上限の向き（活性screenshot 321,644字≈241,233B を1メッセージで移送OK）
 - [x] Firefox MV3の `host_permissions` はoptional扱い（未許可だと scripting拒否・`captureTab` がAPIに生えない。about:addonsの権限で1回許可）
 
-v2（2026-11-22 実機第2回検収・コミットec4fa74）:
+v2（2026-11-22 実環境第2回検収・コミットec4fa74）:
 
 - [x] READ状態で書込みツールが案内文言で弾かれる（field-test 22:45 第2回）
 - [x] 対象ガード: WRITE開始時に開いていた非活性ユーザータブ（tabId=6）への書込みが「書込み許可集合の外」で拒否
@@ -155,10 +155,19 @@ v2（2026-11-22 実機第2回検収・コミットec4fa74）:
 - [x] `page_fill` のin-page事前検査とエラー伝播（httpbin不調でセレクタ不一致をfillFuncから正しく拒否）
 - [x] `close_tab` 応答のtabが実行前採取（実行前URL=https://example.org/が応答と監査の正本に残る）
 - [x] 監査ログに `write:1` と実行前URL（fill値は未記録）
-- [ ] `page_fill` 成功系（フォーム2欄の実埋め＋Firefox側目視＋valueLengths監査）※httpbin代替フォームで手動観察
-- [ ] WRITE突入時のアクティブタブ（entryActiveTabId）への直接書込み
-- [ ] 長ページでの `page_scroll` 実測（example.orgは画面内に収まりscrollY=0のまま。動作は応答OK）
-- [ ] `RINKA_WRITE_TIMEOUT_SECONDS=20` でのWRITE自動落ち
+- [x] `page_fill` 成功系（Wikipedia検索box 1欄に実埋め。応答はselector+valueLengthのみ（23字・13字）、Firefox側目視で入力を確認。httpbin代替は不調だったためVibe Work本番経路で代用）
+- [x] WRITE突入時のアクティブタブ（entryActiveTabId）への直接書込み（page_scrollが許可集合内で受付。当該ページが内部スクロール容器のSPAでscrollYは0のまま、受付と応答はOK。main frameスクロール外はページ起因の既知限界）
+- [x] 長ページでの `page_scroll` 実測（ja.wikipedia Firefox記事: down 1000px → scrollY=1000、up 10000px → 0。example.orgは画面内に収まりscrollY=0のまま、の注記は解消）
+- [ ] `RINKA_WRITE_TIMEOUT_SECONDS=20` でのWRITE自動落ち（Firefox再起動が必要なため未実施）
+
+Vibe Work実接続（2026-11-22 本番経路・main 36a60e4時点）:
+
+- [x] Custom MCP Connector登録: `tailscale funnel 8765` で `127.0.0.1:8765` を `https://<tailnet>.ts.net/mcp` として公開し、API Token認証（Bearer）で登録。14ツールが全て公開され、無認証・偽Bearerは401、OFF後は502
+- [x] READ 4本実測（list_tabs・read_tab本文包装・screenshotを1メッセージで返送・search_historyのLIKE検索）
+- [x] 実Vibe経路の一次modeガード: READ時 `open_tab` がWRITE案内文言で拒否
+- [x] 実Vibe経路の対象ガード: 許可集合外ユーザータブへの `page_scroll` が「書込み許可集合の外」で拒否
+- [x] 書込み10本往復（open → click一意selector → fill → scroll → navigate → back → forward → reload → activate → close。応答URLは実行前採取仕様通り）
+- [x] 実パス監査: 書込み系に `write:1` ＋実行前URL、`page_fill` はvalueLengthsのみ（応答のvalueLength=文字数に対し監査valueLengths=UTF-8バイト長）
 
 ## v2以降の構想
 
