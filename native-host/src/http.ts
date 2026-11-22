@@ -8,9 +8,12 @@
  * - ボディ上限 1MB、超過は413
  * - JSONパース失敗は -32700 を 400 で返す
  * - 通知（応答null）は 202
+ * - 構文規約: as断言不使用（data chunk は明示的 Buffer 注釈で受ける）・
+ *   closeAllConnections は try/空catch でなく関数型検査で呼ぶ。
  */
 
-import { createServer, type Server } from "node:http";
+import { createServer } from "node:http";
+import type { IncomingMessage, Server, ServerResponse } from "node:http";
 import { timingSafeEqual } from "node:crypto";
 import { handleRpcMessage } from "./mcp.ts";
 import type { ToolDeps } from "./tools.ts";
@@ -18,17 +21,17 @@ import type { Config } from "./config.ts";
 import type { Backend } from "./types.ts";
 import type { Audit } from "./audit.ts";
 
-export interface HttpDeps {
+export type HttpDeps = {
   config: Config;
   audit: Audit;
   backend: Backend;
-}
+};
 
 const BODY_MAX = 1024 * 1024;
 const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
 
 /** 定数時間比較（長さが違っても速攻で抜けないよう、自身と比較してタイミングを均す）。 */
-export function tokenMatches(received: string | undefined, expected: string): boolean {
+export const tokenMatches = (received: string | undefined, expected: string): boolean => {
   if (typeof received !== "string" || received.length === 0) return false;
   const a = Buffer.from(received, "utf8");
   const b = Buffer.from(expected, "utf8");
@@ -37,30 +40,47 @@ export function tokenMatches(received: string | undefined, expected: string): bo
     return false;
   }
   return timingSafeEqual(a, b);
-}
+};
 
-function readBearer(req: { headers: Record<string, string | string[] | undefined> }): string | undefined {
+const readBearer = (req: { headers: Record<string, string | string[] | undefined> }): string | undefined => {
   const h = req.headers.authorization;
   if (typeof h !== "string" || !h.startsWith("Bearer ")) return undefined;
   return h.slice("Bearer ".length).trim();
-}
+};
 
-function send(res: import("node:http").ServerResponse, status: number, body: unknown): void {
+const send = (res: ServerResponse, status: number, body: unknown): void => {
   const json = body === null || body === undefined ? "" : JSON.stringify(body);
   res.writeHead(status, {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
   });
   res.end(json);
-}
+};
 
-export interface RunningServer {
+export type RunningServer = {
   server: Server;
   port: number;
-  close(): Promise<void>;
-}
+  close: () => Promise<void>;
+};
 
-export async function startServer(deps: HttpDeps): Promise<RunningServer> {
+/** ボディを受けて1MB超なら null（呼び出し側が413）。chunk は Buffer として明示的に受ける。 */
+const readBody = (req: IncomingMessage): Promise<Buffer | null> =>
+  new Promise<Buffer | null>((resolve, reject) => {
+    const chunks: Buffer[] = [];
+    let size = 0;
+    req.on("data", (chunk: Buffer) => {
+      size += chunk.length;
+      if (size > BODY_MAX) {
+        resolve(null); // 上限超。以後のchunkは読み捨て（応答は呼び出し側で413）
+        return;
+      }
+      chunks.push(chunk);
+    });
+    req.on("end", () => resolve(Buffer.concat(chunks)));
+    req.on("error", reject);
+  });
+
+export const startServer = async (deps: HttpDeps): Promise<RunningServer> => {
   const { config } = deps;
   const toolDeps: ToolDeps = { config, audit: deps.audit, backend: deps.backend };
 
@@ -87,17 +107,12 @@ export async function startServer(deps: HttpDeps): Promise<RunningServer> {
         }
 
         // ---- ボディ受信（上限1MB） ----
-        const chunks: Buffer[] = [];
-        let size = 0;
-        for await (const c of req) {
-          size += c.length;
-          if (size > BODY_MAX) {
-            send(res, 413, { error: "rinka: リクエストが大きすぎます" });
-            return;
-          }
-          chunks.push(c as Buffer);
+        const body = await readBody(req);
+        if (body === null) {
+          send(res, 413, { error: "rinka: リクエストが大きすぎます" });
+          return;
         }
-        const text = Buffer.concat(chunks).toString("utf8");
+        const text = body.toString("utf8");
 
         let parsed: unknown;
         try {
@@ -135,16 +150,12 @@ export async function startServer(deps: HttpDeps): Promise<RunningServer> {
         port,
         close: () =>
           new Promise<void>((r) => {
-            // keep-aliveの残泥を落としてからclose（closeだけだと接続が残り終了が遅れる）
-            try {
-              server.closeAllConnections();
-            } catch {
-              /* Node 18.2未満には無い */
-            }
+            // keep-aliveの残泥を落としてからclose（closeだけだと接続が残り終了が遅れる）。
+            // Node 18.2未満には closeAllConnections が無いので関数型検査で守る（空catch不使用）。
+            if (typeof server.closeAllConnections === "function") server.closeAllConnections();
             server.close(() => r());
           }),
       });
     });
   });
-}
-
+};

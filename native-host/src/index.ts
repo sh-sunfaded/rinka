@@ -3,33 +3,37 @@
  *
  * 起動の流れ:
  *   1. validateEnvironment（token 0600 検査・未知env拒否）
- *   2. stdin を NativeReader でフレーム解釈し AddonBackend へ（stdout へはフレームのみを返す）
+ *   2. stdin を createNativeReader でフレーム解釈し createAddonBackend へ
+ *      （stdout へはフレームのみを返す）
  *   3. HTTPサーバを 127.0.0.1 で listen
  *   4. listen 後、stdout に {t:"ready", port} をフレーム送信（アドオンがバッジを点灯）
  *   5. stdin 終端（アドオン切断=Firefoxがkill）または SIGTERM で server.close + exit 0
  *
  * 注意: stdout は Native Messaging 専用。ログは一切 stdout に書かない（stderr のみ）。
+ * 構文規約: 決定性のため時刻はここ（合成ルート）で実測時計として注入する。
+ *   これが Date 系を直接触る唯一の場所（src内で他は Date.now/new Date を使わない）。
  */
 
 import { validateEnvironment } from "./config.ts";
-import { AddonBackend } from "./backend.ts";
+import { createAddonBackend } from "./backend.ts";
 import { createAudit } from "./audit.ts";
 import { startServer } from "./http.ts";
-import { encodeNativeFrame, NativeReader } from "./native.ts";
+import { createNativeReader, encodeNativeFrame } from "./native.ts";
 
 const HOME = process.env.HOME ?? "/home";
 let shuttingDown = false;
 
-async function main(): Promise<void> {
+const main = async (): Promise<void> => {
   const config = validateEnvironment(process.env, HOME);
-  const audit = createAudit(config.auditPath);
+  const wallClock = (): string => new Date().toISOString(); // 注入される実測時計（境界はこの1箇所）
+  const audit = createAudit(config.auditPath, wallClock);
 
   const send = (o: Record<string, unknown>): void => {
     process.stdout.write(encodeNativeFrame(JSON.stringify(o)));
   };
 
-  const backend = new AddonBackend(send);
-  const reader = new NativeReader();
+  const backend = createAddonBackend(send);
+  const reader = createNativeReader();
 
   process.stdin.on("data", (chunk: Buffer) => {
     try {
@@ -58,7 +62,7 @@ async function main(): Promise<void> {
   process.stdin.on("error", () => shutdown(0));
   process.on("SIGTERM", () => shutdown(0));
   process.on("SIGINT", () => shutdown(0));
-}
+};
 
 main().catch((e) => {
   console.error(e instanceof Error ? e.message : String(e));

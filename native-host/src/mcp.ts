@@ -9,37 +9,44 @@
  * - エラー: -32600 (無効リクエスト) / -32601 (メソッドなし) / -32602 (引数不正)
  *   パース失敗 -32700 はJSON.parseを扱うhttp.ts側。
  * - ツール実行エラーは MCP 規約どおり result.isError:true（プロトコルエラーにしない）。
+ * - 構文規約: as断言不使用（raw/params は形状ガードで絞る・as const も使わず型で固定）。
  */
 
 import { TOOLS, callTool, isKnownTool } from "./tools.ts";
 import type { ToolDeps } from "./tools.ts";
+import { isRecord } from "./types.ts";
 
 export const SUPPORTED_PROTOCOL = "2025-06-18";
-export const SERVER_INFO = { name: "rinka", version: "0.2.0" };
+export const SERVER_INFO = { name: "rinka", version: "0.2.1" };
 
-type RpcError = { code: number; message: string };
-type RpcResponse =
-  | { jsonrpc: "2.0"; id: unknown; result: Record<string, unknown> }
-  | { jsonrpc: "2.0"; id: unknown; error: RpcError };
+export type RpcOk = { jsonrpc: "2.0"; id: unknown; result: Record<string, unknown> };
+export type RpcErr = { jsonrpc: "2.0"; id: unknown; error: { code: number; message: string } };
+export type RpcResponse = RpcOk | RpcErr;
 
-function ok(id: unknown, result: Record<string, unknown>): RpcResponse {
-  return { jsonrpc: "2.0", id, result };
-}
-function err(id: unknown, code: number, message: string): RpcResponse {
-  return { jsonrpc: "2.0", id, error: { code, message } };
-}
+/** 応答が result を持つ方か（テストもこれで絞って中身を見る。as断言不要にするため公開）。 */
+export const isRpcOk = (r: RpcResponse | null): r is RpcOk => r !== null && "result" in r;
+/** 応答が error を持つ方か。 */
+export const isRpcErr = (r: RpcResponse | null): r is RpcErr => r !== null && "error" in r;
 
-const JSONRPC_ERRORS = {
+type JsonRpcErrorCode = -32600 | -32601 | -32602;
+const JSONRPC_ERRORS: { INVALID_REQUEST: JsonRpcErrorCode; METHOD_NOT_FOUND: JsonRpcErrorCode; INVALID_PARAMS: JsonRpcErrorCode } = {
   INVALID_REQUEST: -32600,
   METHOD_NOT_FOUND: -32601,
   INVALID_PARAMS: -32602,
-} as const;
+};
 
-export async function handleRpcMessage(raw: unknown, deps: ToolDeps): Promise<RpcResponse | null> {
-  if (typeof raw !== "object" || raw === null || Array.isArray(raw)) {
+const ok = (id: unknown, result: Record<string, unknown>): RpcResponse => {
+  return { jsonrpc: "2.0", id, result };
+};
+const err = (id: unknown, code: number, message: string): RpcResponse => {
+  return { jsonrpc: "2.0", id, error: { code, message } };
+};
+
+export const handleRpcMessage = async (raw: unknown, deps: ToolDeps): Promise<RpcResponse | null> => {
+  if (!isRecord(raw)) {
     return err(null, JSONRPC_ERRORS.INVALID_REQUEST, "rinka: リクエストはJSONオブジェクトである必要があります");
   }
-  const msg = raw as Record<string, unknown>;
+  const msg = raw;
 
   const id = Object.prototype.hasOwnProperty.call(msg, "id") ? msg.id : undefined;
   const isNotification = id === undefined || id === null;
@@ -74,13 +81,13 @@ export async function handleRpcMessage(raw: unknown, deps: ToolDeps): Promise<Rp
     }
 
     if (method === "tools/call") {
-      const p = (params ?? {}) as Record<string, unknown>;
+      const p = isRecord(params) ? params : {};
       const name = typeof p.name === "string" ? p.name : "";
       if (!isKnownTool(name)) {
         return err(id, JSONRPC_ERRORS.INVALID_PARAMS, `rinka: 未知のツールです: ${name || "(なし)"}`);
       }
       try {
-        const toolArgs = typeof p.arguments === "object" && p.arguments !== null ? p.arguments : {};
+        const toolArgs = isRecord(p.arguments) ? p.arguments : {};
         const result = await callTool(name, toolArgs, deps);
         return ok(id, {
           content: [{ type: "text", text: JSON.stringify(result) }],
@@ -101,4 +108,4 @@ export async function handleRpcMessage(raw: unknown, deps: ToolDeps): Promise<Rp
     const message = e instanceof Error ? e.message : String(e);
     return err(id, -32603, `rinka: 内部エラー: ${message}`);
   }
-}
+};

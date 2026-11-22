@@ -100,11 +100,11 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 2. **Native Messagingマニフェストを登録**
    ```sh
-   mkdir -p ~/.mozilla/native-messaging-hosts
-   cp native-host/install/rinka.json ~/.mozilla/native-messaging-hosts/rinka.json
-   # rinka.json の "path" をこのリポジトリの rinka-host.sh の絶対パスに書き換える
-   # "allowed_extensions" を manifest.json の browser_specific_settings.gecko.id と一致させる
-   chmod 700 ~/.mozilla/native-messaging-hosts/rinka.json
+   bash tools/install-host.sh
+   # ~/.mozilla/native-messaging-hosts/rinka.json を生成:
+   #   "path" = rinka-host.sh の絶対パス（手書き置換を廃止）
+   #   "allowed_extensions" = manifest.json の browser_specific_settings.gecko.id から自動採取
+   # 既存の rinka.json は rinka.json.bak に退避。トークンが無ければ生成まで行う
    ```
 
 3. **拡張を読み込む**: `about:debugging` → 「このFirefox」 → 「一時的な拡張機能を読み込む」 → `extension/` を選択。
@@ -115,13 +115,45 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。リモート（Vibe Workウェブ版）から繋ぐ場合は `tailscale funnel 8765` でhttps化したURL `https://<tailnet>.ts.net/mcp` を使い、用が済んだら Funnel を閉じる（露出は使用時のみ）。
 
+## 日常運用（署名済みxpi＋sudoなし）
+
+上のセットアップの `about:debugging` 一時読み込みは検収用（Firefoxを再起動するたびに読み込み直す必要がある）。日常で使うには、次の3点を1回だけ済ませる。以後はFirefox再起動後も含めて、操作はツールバーアイコンのトグルだけになる。
+
+1. **署名付きxpiを恒久installする**（Release版Firefoxは署名が必須）
+   ```sh
+   node --experimental-strip-types --no-warnings tools/build-xpi.ts
+   # dist/rinka-<version>.xpi を生成（素Nodeのpackager。STORED・DOS日付固定で決定的。
+   # 2回実行で同一SHAになることをテスト2本が機械検証する）
+   ```
+   生成したxpiを AMO の Developer Hub（addons.mozilla.org/developers）で「Submit a New Add-on」から自己配布（unlisted）として提出し、返ってくるMozilla署名済みxpiをダウンロードする。web-extは使わない（依存ゼロを維持）。署名済みxpiはFirefoxへドラッグ＆ドロップ（または about:addons の歯車から「ファイルからアドオンをインストール」）で恒久installし、about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可する（恒久install直後の1回だけ）。
+
+2. **rinka.jsonを新IDで登録し直す**（拡張IDを `rinka@example.invalid` からGUIDへ変更したため、旧rinka.jsonのままではFirefoxが接続を弾く）
+   ```sh
+   bash tools/install-host.sh
+   ```
+
+3. **Funnelをsudoなしで開閉できるようにする**（Vibe Workウェブ版からリモートで繋ぐ場合のみ）
+   ```sh
+   sudo tailscale set --operator=$USER
+   tailscale funnel 8765      # 以後は sudo なしで開ける
+   tailscale funnel status    # 状態確認
+   tailscale funnel 8765 off  # 用が済んだら閉じる（露出は使用時のみ）
+   ```
+   operatorはServe/Funnelのポート転送をroot以外のユーザーに開放する公式の仕組み（tailscale docs: `tailscale set --operator=<user>`）。rinka本体はOFFトグルでプロセスごと消えるため、Funnelの開けっ放し可否は運用で選ぶ。
+
 ## テスト
 
 ```sh
 node --experimental-strip-types --no-warnings test/run-tests.ts
 ```
 
-ハーネスには 標準ライブラリの `node:test` + `node:assert` を使い、自作はしない。35→47テスト: FakeBackendによる tools（v2書込み14本のmodeガード・引数検査・監査値無し検査を含む）/ audit（writeタグ・プリミ配列通過）/ config（boolStrict・URL allowlist）/ mcp / Native Messaging フレーミング / セッションレスHTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → cfg → 401 → initialize → tools/call → READ時書込み拒否 → `{t:"mode"}` 受信 → WRITE書込み往復 → exit 0）まで含む。
+ハーネスには 標準ライブラリの `node:test` + `node:assert` を使い、自作はしない。35→51テスト: FakeBackendによる tools（v2書込み14本のmodeガード・引数検査・監査値無し検査を含む）/ audit（writeタグ・プリミ配列通過）/ config（boolStrict・URL allowlist）/ mcp / Native Messaging フレーミング / セッションレスHTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → cfg → 401 → initialize → tools/call → READ時書込み拒否 → `{t:"mode"}` 受信 → WRITE書込み往復 → exit 0）まで含む。
+
+構文規約（constアロー関数とtype中心。any・`as`断言・空catch・`Date.now`/`new Date` の直参照を書かない。時計は index.ts のwallClock注入点だけが `new Date` を許される）は、grep機械検査で守る:
+
+```sh
+bash tools/ts-style-check.sh   # exit 0 = 規約どおり。JS拡張（background.js）は対象外
+```
 
 実環境の疎通・観察点は `tools/field-test.sh` に一括化してある（要 curl + jq）:
 
@@ -172,8 +204,8 @@ Vibe Work実接続（2026-11-22 本番経路・main 36a60e4時点）:
 ## v2以降の構想
 
 - Vibe Code CLI (stdio transport) 直結
-- AMO公開
-- sudoなし運用の実データによる検証
+- AMO listed公開（自己配布のunlisted署名は「日常運用」節の手順で解決済み）
+- tailscale operator（sudoなし開閉）常用の実データ検証
 
 ## ライセンス
 

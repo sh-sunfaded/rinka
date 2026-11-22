@@ -15,7 +15,7 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
-export interface Config {
+export type Config = {
   host: string;
   port: number;
   token: string;
@@ -31,7 +31,7 @@ export interface Config {
   sudoFillUrls: string[];
   /** page_fill 1欄あたりのvalueバイト上限。 */
   fillMaxBytes: number;
-}
+};
 
 const KNOWN_VARS: ReadonlySet<string> = new Set([
   "RINKA_TOKEN",
@@ -52,17 +52,17 @@ const LOCALHOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1"
 
 const MIN_TOKEN_LEN = 32;
 
-function intRange(name: string, raw: string | undefined, def: number, min: number, max: number): number {
+const intRange = (name: string, raw: string | undefined, def: number, min: number, max: number): number => {
   if (raw === undefined || raw === "") return def;
   const n = Number(raw);
   if (!Number.isInteger(n) || n < min || n > max) {
     throw new Error(`rinka: ${name} は ${min}〜${max} の整数で指定してください（実測: ${raw}）`);
   }
   return n;
-}
+};
 
 /** トークン読み込み: env RINKA_TOKEN > RINKA_TOKEN_PATH のファイル > ~/.config/rinka/token。 */
-export function loadToken(env: Record<string, string | undefined>, homeDir: string): string {
+export const loadToken = (env: Record<string, string | undefined>, homeDir: string): string => {
   const envToken = env.RINKA_TOKEN;
   if (typeof envToken === "string" && envToken.length > 0) {
     if (envToken.length < MIN_TOKEN_LEN) {
@@ -86,26 +86,24 @@ export function loadToken(env: Record<string, string | undefined>, homeDir: stri
     throw new Error(`rinka: トークンが短すぎます（${MIN_TOKEN_LEN}字以上）: ${path}`);
   }
   return token;
-}
+};
 
 /** bool env: "1"/"true"/"yes" はtrue、"0"/"false"/"no"/未設定 はfalse、他は拒否（typo防止）。 */
-function boolStrict(name: string, raw: string | undefined): boolean {
+const boolStrict = (name: string, raw: string | undefined): boolean => {
   if (raw === undefined || raw === "") return false;
   const v = raw.toLowerCase();
   if (v === "1" || v === "true" || v === "yes") return true;
   if (v === "0" || v === "false" || v === "no") return false;
   throw new Error(`rinka: ${name} は true/false で指定してください（実測: ${raw}）`);
-}
+};
 
 /** allowlistの空エントリ除去＋URL形式検査（境界照合自体は in-page で行う）。 */
-function parseUrlList(name: string, raw: string | undefined): string[] {
+const parseUrlList = (name: string, raw: string | undefined): string[] => {
   if (raw === undefined || raw.trim() === "") return [];
   const items = raw.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
   for (const it of items) {
-    let u: URL;
-    try {
-      u = new URL(it);
-    } catch {
+    const u = parseHttpUrl(it);
+    if (u === null) {
       throw new Error(`rinka: ${name} に不正なURLがあります: ${it}`);
     }
     if (u.protocol !== "http:" && u.protocol !== "https:") {
@@ -113,9 +111,18 @@ function parseUrlList(name: string, raw: string | undefined): string[] {
     }
   }
   return items;
-}
+};
 
-export function validateEnvironment(env: Record<string, string | undefined>, homeDir: string): Config {
+/** new URL の成否を null で返す判別関数（空catchを書かずにURL検査するための小さな閉包）。 */
+const parseHttpUrl = (raw: string): URL | null => {
+  try {
+    return new URL(raw);
+  } catch {
+    return null;
+  }
+};
+
+export const validateEnvironment = (env: Record<string, string | undefined>, homeDir: string): Config => {
   for (const key of Object.keys(env)) {
     if (key.startsWith("RINKA_") && !KNOWN_VARS.has(key)) {
       throw new Error(`rinka: 未知の環境変数です: ${key}（既知は $(RINKA_TOKEN, RINKA_TOKEN_PATH, RINKA_HOST, RINKA_PORT, RINKA_READ_MAX_BYTES, RINKA_SCREENSHOT_MAX_BYTES, RINKA_HISTORY_MAX_ROWS, RINKA_AUDIT_PATH, RINKA_WRITE_TIMEOUT_SECONDS, RINKA_SUDO_FILL, RINKA_SUDO_FILL_URLS, RINKA_FILL_MAX_BYTES)）`);
@@ -153,4 +160,4 @@ export function validateEnvironment(env: Record<string, string | undefined>, hom
   const token = loadToken(env, homeDir);
 
   return { host, port, token, readMaxBytes, screenshotMaxBytes, historyMaxRows, auditPath, writeTimeoutSec, sudoFill, sudoFillUrls, fillMaxBytes };
-}
+};
