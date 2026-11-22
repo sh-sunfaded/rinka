@@ -133,6 +133,8 @@ SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛
 
 WRITE自動落ちの観察は `RINKA_WRITE_TIMEOUT_SECONDS=20` でFirefoxを起動し直して初めて可能（プロセスspawn時に読まれるため）。WRITEのまま放置し、20秒後に書込みが弾かれることで確認する。
 
+検査URLが到達不能な環境では `RINKA_FT_URL` / `RINKA_FT_URL2` / `RINKA_FT_FORM_URL` で差し替えられる（既定は example.com / example.org / httpbin.org）。
+
 ## 実機確認事項
 
 v1.1.1（2026-11-22 実機検収: 全点解決）:
@@ -144,15 +146,19 @@ v1.1.1（2026-11-22 実機検収: 全点解決）:
 - [x] native messaging のメッセージ上限の向き（活性screenshot 321,644字≈241,233B を1メッセージで移送OK）
 - [x] Firefox MV3の `host_permissions` はoptional扱い（未許可だと scripting拒否・`captureTab` がAPIに生えない。about:addonsの権限で1回許可）
 
-v2（実機検収待ち）:
+v2（2026-11-22 実機第2回検収・コミットec4fa74）:
 
-- [ ] READ状態で書込みツールが案内文言で弾かれるか
-- [ ] WRITEトグル直後、WRITE開始時のアクティブタブに書けるか・非活性ユーザータブが対象ガードで弾かれるか
-- [ ] `open_tab` → click → back → forward → navigate → reload → scroll の往復
-- [ ] `page_fill` の全欄一括入力（httpbin.org のフォーム2欄）と「Firefox側で目視できる」こと
-- [ ] 監査ログに `write:1` と実行前URLだけが残り、fill値が残らないこと
+- [x] READ状態で書込みツールが案内文言で弾かれる（field-test 22:45 第2回）
+- [x] 対象ガード: WRITE開始時に開いていた非活性ユーザータブ（tabId=6）への書込みが「書込み許可集合の外」で拒否
+- [x] `open_tab` → click → back → forward → navigate → reload → scroll の往復（open直後のabout:blankはlist_tabsコミット待ちで解消。tabAfterはコミット前採取を再照会で刈り取り）
+- [x] `open_tab` 応答のURL正規化（Firefoxのtabs.create直後Tab.url=about:blank既知挙動 → 応答/監査は開いたURL）
+- [x] `page_fill` のin-page事前検査とエラー伝播（httpbin不調でセレクタ不一致をfillFuncから正しく拒否）
+- [x] `close_tab` 応答のtabが実行前採取（実行前URL=https://example.org/が応答と監査の正本に残る）
+- [x] 監査ログに `write:1` と実行前URL（fill値は未記録）
+- [ ] `page_fill` 成功系（フォーム2欄の実埋め＋Firefox側目視＋valueLengths監査）※httpbin代替フォームで手動観察
+- [ ] WRITE突入時のアクティブタブ（entryActiveTabId）への直接書込み
+- [ ] 長ページでの `page_scroll` 実測（example.orgは画面内に収まりscrollY=0のまま。動作は応答OK）
 - [ ] `RINKA_WRITE_TIMEOUT_SECONDS=20` でのWRITE自動落ち
-- [ ] `close_tab` 応答のtabが実行前採取になっていること
 
 ## v2以降の構想
 
