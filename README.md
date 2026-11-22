@@ -127,6 +127,8 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
    ```
    生成したxpiを AMO の Developer Hub（addons.mozilla.org/developers）で「Submit a New Add-on」から自己配布（unlisted）として提出し、返ってくるMozilla署名済みxpiをダウンロードする。web-extは使わない（依存ゼロを維持）。署名済みxpiはFirefoxへドラッグ＆ドロップ（または about:addons の歯車から「ファイルからアドオンをインストール」）で恒久installし、about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可する（恒久install直後の1回だけ）。
 
+   なおFirefox 140以降ではinstall時にデータ収集の同意も出る: rinkaはページ情報（URL・本文・スクリーンショット）をブラウザ外のnative hostへ渡すため、manifestの `data_collection_permissions` に `browsingActivity`（ブラウジング活動）と `websiteContent`（ウェブサイトの内容）を申告してある（2025-11以降の新規拡張はこの申告が必須で、無いとAMO検証で弾かれる。ページデータは自機から出ないが、Mozillaの定義は「アドオンかブラウザの外へ扱われるデータ」までを収集と数えるため「none」にはできない）。
+
 2. **rinka.jsonを新IDで登録し直す**（拡張IDを `rinka@example.invalid` からGUIDへ変更したため、旧rinka.jsonのままではFirefoxが接続を弾く）
    ```sh
    bash tools/install-host.sh
