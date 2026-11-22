@@ -113,7 +113,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 5. **READする**: ツールバーのrinkaアイコンをクリック。バッジ `ON`（琥珀）。もう1回クリックで `W`（赤）＝WRITE。
 
-6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。リモート（Vibe Workウェブ版）から繋ぐ場合は `tailscale funnel 8765` でhttps化したURL `https://<tailnet>.ts.net/mcp` を使い、用が済んだら Funnel を閉じる（露出は使用時のみ）。
+6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。リモート（Vibe Workウェブ版）から繋ぐ場合は `tailscale funnel --bg 8765` でhttps化したURL `https://<tailnet>.ts.net/mcp` を使い、用が済んだら Funnel を閉じる（露出は使用時のみ）。
 
 ## 日常運用（署名済みxpi＋sudoなし）
 
@@ -137,11 +137,11 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 3. **Funnelをsudoなしで開閉できるようにする**（Vibe Workウェブ版からリモートで繋ぐ場合のみ）
    ```sh
    sudo tailscale set --operator=$USER
-   tailscale funnel 8765      # 以後は sudo なしで開ける
-   tailscale funnel status    # 状態確認
-   tailscale funnel 8765 off  # 用が済んだら閉じる（露出は使用時のみ）
+   tailscale funnel --bg 8765  # --bg必須: 無いとターミナルを閉じた時点で設定が消える
+   tailscale funnel status     # 8765が載っていれば恒久（機器再起動後も自動再開）
+   tailscale funnel 8765 off   # 用が済んだら閉じる（露出は使用時のみ）
    ```
-   operatorはServe/Funnelのポート転送をroot以外のユーザーに開放する公式の仕組み（tailscale docs: `tailscale set --operator=<user>`）。rinka本体はOFFトグルでプロセスごと消えるため、Funnelの開けっ放し可否は運用で選ぶ。
+   operatorはServe/Funnelのポート転送をroot以外のユーザーに開放する公式の仕組み（tailscale docs: `tailscale set --operator=<user>`）。--bg は設定をtailscaledに持たせる指定で、付けないとそのターミナルのforegroundセッションとして動き、ターミナルを閉じるとFunnel設定ごと消える（公式docsの-bg説明）。rinka本体はOFFトグルでプロセスごと消えるため、Funnelの開けっ放し可否は運用で選ぶ。
 
 ## テスト
 
