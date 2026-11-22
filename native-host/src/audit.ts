@@ -6,6 +6,9 @@
  *   サイズ確認は毎回 stat で行う（行数カウンタと違い、プロセス再起動を跨いでも正しい）。
  * - 0600 で作成。監査ログの失敗で本体を止めない（書込エラーは握り潰す）。
  * - 文字列は200字で頭を切る。呼び出し側（tools.ts）が安全な引数のみ渡すのが第一防衛。
+ * - v2: 書込み系は record(tool, args, {write:true, url}) で対象URLを実行前採取値と共に
+ *   トップレベルに記録（close_tab は実行後採取不能なため全書込みで実行前に統一）。
+ *   fill の value は絶対に書かない（tools.ts が長さのみを渡す）。
  */
 
 import { appendFileSync, chmodSync, existsSync, mkdirSync, renameSync, statSync } from "node:fs";
@@ -16,11 +19,21 @@ const ROTATE_BYTES = 64 * 1024;
 function safeValue(v: unknown): unknown {
   if (typeof v === "number" || typeof v === "boolean" || v === null || v === undefined) return v;
   if (typeof v === "string") return v.length > 200 ? v.slice(0, 200) + "…" : v;
-  return undefined; // オブジェクト・配列・その他は記録しない
+  if (Array.isArray(v)) {
+    // プリミティブのみの配列は通す（valueLengths 等）。1レベルのみ。オブジェクト混じりは落とす。
+    const arr = v.map(safeValue);
+    return arr.every((x) => x !== undefined) ? arr : undefined;
+  }
+  return undefined; // オブジェクト・その他は記録しない
+}
+
+export interface AuditWriteTag {
+  write?: boolean;
+  url?: string;
 }
 
 export interface Audit {
-  record(tool: string, args: Record<string, unknown>): void;
+  record(tool: string, args: Record<string, unknown>, tag?: AuditWriteTag): void;
 }
 
 export function createAudit(path: string): Audit {
@@ -35,7 +48,7 @@ export function createAudit(path: string): Audit {
   }
 
   return {
-    record(tool: string, args: Record<string, unknown>) {
+    record(tool: string, args: Record<string, unknown>, tag?: AuditWriteTag) {
       try {
         if (existsSync(path) && statSync(path).size >= ROTATE_BYTES) {
           renameSync(path, path + ".1");
@@ -45,7 +58,12 @@ export function createAudit(path: string): Audit {
           const sv = safeValue(v);
           if (sv !== undefined || v === null) safe[k] = sv;
         }
-        appendFileSync(path, JSON.stringify({ ts: new Date().toISOString(), tool, args: safe }) + "\n");
+        const entry: Record<string, unknown> = { ts: new Date().toISOString(), tool, args: safe };
+        if (tag?.write === true) entry.write = 1;
+        if (typeof tag?.url === "string" && tag.url.length > 0) {
+          entry.url = tag.url.length > 200 ? tag.url.slice(0, 200) + "…" : tag.url;
+        }
+        appendFileSync(path, JSON.stringify(entry) + "\n");
       } catch {
         // 握り潰す（家規: 監査は副次系）
       }

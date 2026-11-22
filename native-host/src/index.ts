@@ -45,6 +45,8 @@ async function main(): Promise<void> {
 
   // ==== 準備完了をアドオンに伝える ====
   send({ t: "ready", port: running.port });
+  // v2: WRITE自動落ち秒数をアドオンへ渡す（RINKA_WRITE_TIMEOUT_SECONDS。アドオン側で防御クランプ）
+  send({ t: "cfg", writeTimeoutSec: config.writeTimeoutSec });
 
   const shutdown = (code: number): void => {
     if (shuttingDown) return;

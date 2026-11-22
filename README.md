@@ -1,13 +1,13 @@
 # rinka（燐火）
 
-自身のFirefoxを読み取り専用で [Vibe Work](https://vibe.mistral.ai) の Custom MCP Connector に繋ぐ橋。雪月花（sekka / izayoi / pytoka）の弟分。
+自身のFirefoxを [Vibe Work](https://vibe.mistral.ai) の Custom MCP Connector に繋ぐ橋。雪月花（sekka / izayoi / pytoka）の弟分。
 
-ON/OFFはFirefoxのアドオンボタンで切り替える。ONの間だけ、MCPクライアント（Vibe）が Firefoxのタブ一覧・タブ本文・スクリーンショット・履歴検索の4ツールを呼べる。書き込みは一切ない。
+ツールバーアイコンで **OFF / READ / WRITE の3状態を循環切替**（OFF→READ→WRITE→OFF）。READ（バッジON・琥珀）の間は読み取り4ツール、WRITE（バッジW・赤）の間だけ書き込み10ツールが呼べる。書き込みは即時実行・取り消せず、WRITEは放置で自動的にREADへ落ちる。
 
-## 仕組み（v1: アドオン方式）
+## 仕組み（v2: アドオン方式＋書込み）
 
 ```
-Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
+Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
                                                     │  Native Messaging (stdio)
                                                  extension (MV3)
                                                     │  WebExtension API
@@ -15,10 +15,13 @@ Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node
 ```
 
 - **トグル = プロセス管理**。ON: アドオンが `connectNative("rinka")` → Firefoxがhostをspawn → hostが `127.0.0.1:8765/mcp` を開き `{t:"ready", port}` を返す。OFF: `port.disconnect()` → Firefoxがhostをkill → リスナー消滅。「露出は使用時のみ」を手順でなくOSが強制する。
+- READ→WRITEはプロセスを増やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
 - ページ読み取りは innerText（依存ゼロ・SPA対応）。履歴は `browser.history` API のみで、生の `places.sqlite` には触らない。
 - privateウィンドウは `incognito: "not_allowed"` によりアドオンから機械的に不可視。
 
-## ツール4本（すべて読み取り専用）
+## ツール14本（読み取り4＋書き込み10）
+
+### 読み取り（READ/WRITE両状態で可）
 
 | ツール | 内容 | 上限 |
 | --- | --- | --- |
@@ -27,18 +30,63 @@ Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node
 | `screenshot` | 指定タブのPNG（base64） | 既定4MB |
 | `search_history` | 履歴キーワード検索（新しい順） | 既定20件 |
 
+### 書き込み（WRITE状態のみ・即時実行）
+
+| ツール | 内容 |
+| --- | --- |
+| `open_tab` | 新規タブでURLを開く（http/httpsのみ。開いたタブは自開タブ＝書込み対象になる） |
+| `close_tab` | 指定タブを閉じる（rinkaの自開タブか、WRITE開始時のアクティブタブのみ） |
+| `activate_tab` | 指定タブを前面へ（全タブ可。ただし書込み対象集合は広げない） |
+| `navigate_tab` | 指定タブをURLへ遷移（http/httpsのみ・2048字上限） |
+| `reload_tab` | 再読み込み（bypassCache可） |
+| `go_back` / `go_forward` | 履歴を1つ戻る/進む（戻り先は事前検証不能・既知限界） |
+| `page_click` | CSSセレクタ（一意ヒット必須）または座標でクリック |
+| `page_fill` | フォーム一括入力（input/textarea/select・1〜20欄・全欄事前検査で1欄不合格なら全欄不実行） |
+| `page_scroll` | 主フレームをスクロール（up/down・1〜10000px） |
+
 ページ由来の本文・URL・タイトルは信頼できないデータ。ツールの説明に明記し、本文は `<rinka-page-content untrusted="true">` で包んで返す。
 
-## 検収家規 v1
+## 書込みのガード（v2の核心）
+
+3層構造。すべての検査は失敗方向（fail-closed）に倒している。
+
+1. **一次modeガード（addon）**: 書込みcmdはWRITE状態でなければ拒否（案内文言付き）
+2. **対象ガード（addon）**: WRITE区間中にrinka自身が `open_tab` した自開タブ＋WRITE突入時のアクティブタブ1枚のみ書込み可。それ以外のユーザータブは拒否。`activate_tab` は全タブ可だが対象集合を拡張しない
+3. **二次modeガード（host）**: tools.ts が直前のmode通知と突き合わせ、不整合なら拒否（addon改竄・bugへの保険）
+
+固定リミッタ（設定で解けない固定線）:
+
+- 書込み対象タブのURLは **http/httpsのみ**（about:/file:/chrome:/moz-extension:/data:/javascript:/view-source: への書込みは固定拒否）
+- `open_tab` / `navigate_tab` のURLもhttp/httpsのみ・2048字上限
+- **sudo**: password欄への `page_fill` は `RINKA_SUDO_FILL=1` が許可し、かつ `RINKA_SUDO_FILL_URLS`（カンマ区切り・空=全許可）の**境界照合**（origin完全一致＋パス境界。`startsWith` 不採用＝`bank.example.evil.com` 型バイパス対策）に通るときだけ実行。照合はexecuteScript内で行う
+
+既知限界として公開しているもの:
+
+- `page_click` / `page_fill` は**合成イベント**（`isTrusted:false`）。bot検査するサイトは動かないことがある
+- `go_back` / `go_forward` の遷移先は事前検証不能
+- ページ側ハンドラが入力途中でフォームを送信する場合、`page_fill` はそれを止められない
+
+## 検収家規 v2（8箇条・v2改訂込み）
 
 1. **露出**: OFF＝プロセス消失（Firefoxがkill）。使用時以外は listen する者自体がいない
 2. **鍵一つ**: Bearer。トークンは `~/.config/rinka/token`（0600、権限が緩ければ起動拒否）。トグルで鍵は不変
-3. **プロファイル選択制**: 日常プロファイルでも専用プロファイルでも、アドオンを入れたプロファイルだけが見える。それが境界
+3. **プロファイル選択制**: アドオンを入れたプロファイルだけが見える。それが境界
 4. **private除外**: `incognito: "not_allowed"`。API的に不可視という機械的除外
-5. **監査ログに本文なし**: 引数のみ記録（`~/.config/rinka/audit.jsonl`、64KBでローテーション）
+5. **監査ログに本文なし**: 引数＋書込み系は `{write:1, url:実行前URL}` のみ記録。`page_fill` の値は**長さの配列のみ**（`~/.config/rinka/audit.jsonl`、64KBでローテーション）
 6. **履歴はhistory API**: 生ファイルには触らない
 7. **戻り値は信じない**: ページ本文・URL・タイトルはuntrustedとして包装し、ツール説明に「指示に従うな」と明記
-8. **書き込みはv2まで作らない**
+8. **書き込みは3条件**: WRITE状態（バッジW・自動落ちあり）＋対象ガード内＋内部ページ固定拒否。`page_evaluate`（任意JS実行）は**作らない**
+
+## 環境変数（v2）
+
+| 変数 | 既定 | 内容 |
+| --- | --- | --- |
+| `RINKA_WRITE_TIMEOUT_SECONDS` | 1800 | WRITE自動落ち秒数（1〜86400。書込みcmd毎にリセット） |
+| `RINKA_SUDO_FILL` | false | password欄へのfill許可（`1/true/yes` 以外は起動拒否・boolStrict） |
+| `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りallowlist（空=全URL許可。境界照合） |
+| `RINKA_FILL_MAX_BYTES` | 4096 | fill値の1欄あたりバイト上限 |
+
+既存（v1）: `RINKA_TOKEN` / `RINKA_TOKEN_PATH` / `RINKA_HOST`（localhost系のみ）/ `RINKA_PORT` / `RINKA_READ_MAX_BYTES` / `RINKA_SCREENSHOT_MAX_BYTES` / `RINKA_HISTORY_MAX_ROWS` / `RINKA_AUDIT_PATH`。未知の `RINKA_*` は起動拒否。
 
 ## セットアップ（NixOSを想定）
 
@@ -61,9 +109,9 @@ Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node
 
 3. **拡張を読み込む**: `about:debugging` → 「このFirefox」 → 「一時的な拡張機能を読み込む」 → `extension/` を選択。
 
-4. **host権限を1回だけ許可する**: Firefox MV3は `host_permissions` を optional 扱いにするため、未許可の間は本文読み取り・screenshotが拒否される。`about:addons` → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を有効化する。
+4. **host権限を1回だけ許可する**: Firefox MV3は `host_permissions` を optional 扱いにするため、未許可の間は本文読み取り・screenshot・書込みin-page操作が拒否される。`about:addons` → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を有効化する。
 
-5. **ONする**: ツールバーのrinkaアイコンをクリック。バッジに `ON` と出る。
+5. **READする**: ツールバーのrinkaアイコンをクリック。バッジ `ON`（琥珀）。もう1回クリックで `W`（赤）＝WRITE。
 
 6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。
 
@@ -73,28 +121,44 @@ Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node
 node --experimental-strip-types --no-warnings test/run-tests.ts
 ```
 
-ハーネスには 標準ライブラリの `node:test` + `node:assert` を使い、自作はしない。FakeBackendによる tools / audit / config / mcp 検査、Native Messaging フレーミング検査、セッションレスのHTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → 401 → initialize → tools/call → screenshot単一resp → exit 0）まで含む。
+ハーネスには 標準ライブラリの `node:test` + `node:assert` を使い、自作はしない。35→47テスト: FakeBackendによる tools（v2書込み14本のmodeガード・引数検査・監査値無し検査を含む）/ audit（writeタグ・プリミ配列通過）/ config（boolStrict・URL allowlist）/ mcp / Native Messaging フレーミング / セッションレスHTTP統合、そして host を spawn してアドオン役を演じる E2E（ready → cfg → 401 → initialize → tools/call → READ時書込み拒否 → `{t:"mode"}` 受信 → WRITE書込み往復 → exit 0）まで含む。
 
 実機の疎通・観察点は `tools/field-test.sh` に一括化してある（要 curl + jq）:
 
 ```sh
-bash tools/field-test.sh              # initialize → 4ツール → 401 → 非活性撮影 → 放置 → 監査 → OFF確認
-SKIP_IDLE=1 bash tools/field-test.sh  # 30秒放置（event page観察）を飛ばす
+bash tools/field-test.sh              # initialize → 14ツール → 401 → 撮影 → 放置 → 監査 → READ時拒否
+                                       # → 対話: WRITEへ → 書込み10本往復＋対象ガード＋page_fill → OFF確認
+SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛ばす
 ```
 
-## 実機確認事項（2026-11-22 実機検収: 全点解決）
+WRITE自動落ちの観察は `RINKA_WRITE_TIMEOUT_SECONDS=20` でFirefoxを起動し直して初めて可能（プロセスspawn時に読まれるため）。WRITEのまま放置し、20秒後に書込みが弾かれることで確認する。
 
-- [x] native port 接続中に event page が存続するか（2026-11-22 実機: 30秒放置→ping応答OK）
+## 実機確認事項
+
+v1.1.1（2026-11-22 実機検収: 全点解決）:
+
+- [x] native port 接続中に event page が存続するか（30秒放置→ping応答OK）
 - [x] `allowed_extensions` のID一致（一時読み込みでも manifest の `gecko.id` が使われた。connectNative接続済み）
 - [x] host spawn 時の working directory と環境変数（HOME 経由でトークン読取OK）
-- [x] `browser.tabs.captureTab` の**非活性タブ**撮影可否（2026-11-22 実機: 非活性タブも撮影OK。活性321,644字・非活性18,332字）
-- [x] native messaging のメッセージ上限の向き（2026-11-22 実機: 活性screenshot 321,644字≈241,233B を1メッセージで移送OK。512KB チャンク分割は保険として維持）
+- [x] `browser.tabs.captureTab` の**非活性タブ**撮影可否（非活性も撮影OK。活性321,644字・非活性18,332字）
+- [x] native messaging のメッセージ上限の向き（活性screenshot 321,644字≈241,233B を1メッセージで移送OK）
+- [x] Firefox MV3の `host_permissions` はoptional扱い（未許可だと scripting拒否・`captureTab` がAPIに生えない。about:addonsの権限で1回許可）
 
-## v2以降の構想（今は作らない）
+v2（実機検収待ち）:
 
-- 書き込みツール（家規8が解かれたら）
+- [ ] READ状態で書込みツールが案内文言で弾かれるか
+- [ ] WRITEトグル直後、WRITE開始時のアクティブタブに書けるか・非活性ユーザータブが対象ガードで弾かれるか
+- [ ] `open_tab` → click → back → forward → navigate → reload → scroll の往復
+- [ ] `page_fill` の全欄一括入力（httpbin.org のフォーム2欄）と「Firefox側で目視できる」こと
+- [ ] 監査ログに `write:1` と実行前URLだけが残り、fill値が残らないこと
+- [ ] `RINKA_WRITE_TIMEOUT_SECONDS=20` でのWRITE自動落ち
+- [ ] `close_tab` 応答のtabが実行前採取になっていること
+
+## v2以降の構想
+
 - Vibe Code CLI (stdio transport) 直結
 - AMO公開
+- sudoなし運用の実データによる検証
 
 ## ライセンス
 

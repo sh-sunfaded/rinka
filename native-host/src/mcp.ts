@@ -15,7 +15,7 @@ import { TOOLS, callTool, isKnownTool } from "./tools.ts";
 import type { ToolDeps } from "./tools.ts";
 
 export const SUPPORTED_PROTOCOL = "2025-06-18";
-export const SERVER_INFO = { name: "rinka", version: "0.1.0" };
+export const SERVER_INFO = { name: "rinka", version: "0.2.0" };
 
 type RpcError = { code: number; message: string };
 type RpcResponse =

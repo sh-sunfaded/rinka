@@ -5,8 +5,12 @@
 #   bash tools/field-test.sh               # 全観察点（OFF確認は対話）
 #   SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛ばす
 #
-# 見る点: initialize / tools/list / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
-#         read_tab wrapper / search_history / event page持続 / OFF＝プロセス消失 / 監査本文なし
+# 見る点: initialize / tools/list(14) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
+#         read_tab wrapper / search_history / event page持続 / READ時書込み拒否 /
+#         WRITE書込み10本往復（open→click→back→forward→navigate→reload→scroll→fill→close）/
+#         対象ガード（非活性ユーザータブ拒否）/ 監査write:1+url / OFF＝プロセス消失 / 監査本文なし
+# WRITE自動落ちの観察はRINKA_WRITE_TIMEOUT_SECONDS（既定1800）が絡むためFirefox起動時に
+# 環境変数を与える必要がある。デフォルトでは検証しない（下の注記参照）。
 
 set -uo pipefail
 
@@ -47,7 +51,7 @@ NAME="$(j "$R" -r '.result.serverInfo.name // empty')"
 R="$(req '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
 _JQX_FALLBACK=0
 N="$(j "$R" '.result.tools | length')"
-[[ "$N" == "4" ]] && ok "tools/list: 4ツール" || { fail "tools/listが4ツールでない($N)"; head_ "$R"; }
+[[ "$N" == "14" ]] && ok "tools/list: 14ツール（読み取り4＋書込み10）" || { fail "tools/listが14ツールでない($N)"; head_ "$R"; }
 
 # ---- 3. list_tabs（活性と非活性のIDを採る） ----
 R="$(req '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}')"
@@ -138,9 +142,128 @@ else
   echo "  監査ログがまだ無い: $AUDIT"
 fi
 
-# ---- 11. OFF＝プロセス消失（家規1・対話） ----
+# ---- 11. v2: READ状態での書込み拒否（一次/二次modeガード） ----
 echo ""
-read -r -p "FirefoxのrinkaボタンをOFFにしてEnterを押してください: "
+R="$(req '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"open_tab","arguments":{"url":"https://example.com/"}}}')"
+_JQX_FALLBACK=''
+WERR="$(j "$R" -r '.result.content[0].text // empty')"
+if [[ "$WERR" == *"WRITE"* ]]; then
+  ok "READ時のopen_tabは拒否: ${WERR:0:70}…"
+else
+  fail "READ時のopen_tabが拒否されていない"; head_ "$R"
+fi
+
+# ---- 12. v2: WRITE区間（対話: ここで1回クリックして追加で書込み状態へ） ----
+echo ""
+read -r -p "Firefoxのrinkaボタンをもう1回クリックしてWRITE（バッジW・赤）にしてEnter: "
+R="$(req '{"jsonrpc":"2.0","id":11,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}')"
+_JQX_FALLBACK='[]'
+TABS2="$(j "$R" -c '.result.structuredContent.tabs')"
+BG2="$(jq '[.[] | select(.active != true)][0].tabId' <<<"$TABS2" 2>/dev/null || echo '')"
+
+# 12a. open_tab（自開タブになる）
+R="$(req '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"open_tab","arguments":{"url":"https://example.com/"}}}')"
+_JQX_FALLBACK=''
+SELF_ID="$(j "$R" '.result.structuredContent.tab.tabId')"
+if [[ -n "$SELF_ID" && "$SELF_ID" != "null" ]]; then
+  SELF_URL="$(j "$R" -r '.result.structuredContent.tab.url')"
+  ok "open_tab: tabId=$SELF_ID $SELF_URL（自開タブ＝以降の書込み対象）"
+else
+  fail "open_tabが失敗"; head_ "$R"; SELF_ID=""
+fi
+
+# 12b. page_click（example.comの<a>は1点だけ→セレクタ一意）
+if [[ -n "$SELF_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\",\"params\":{\"name\":\"page_click\",\"arguments\":{\"tabId\":$SELF_ID,\"selector\":\"a\"}}}")"
+  EL="$(j "$R" -r '.result.structuredContent.element // empty')"
+  [[ -n "$EL" ]] && ok "page_click('a'): element=$EL（example.comのmoreinfoへ遷移する）" \
+                  || { fail "page_clickが失敗"; head_ "$R"; }
+fi
+
+# 12c. go_back / go_forward（直前の遷移履歴を使う）
+if [[ -n "$SELF_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"tools/call\",\"params\":{\"name\":\"go_back\",\"arguments\":{\"tabId\":$SELF_ID}}}")"
+  [[ "$(j "$R" '.result.structuredContent.tab.tabId')" == "$SELF_ID" ]] && ok "go_back: 応答OK" || { fail "go_backが失敗"; head_ "$R"; }
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tools/call\",\"params\":{\"name\":\"go_forward\",\"arguments\":{\"tabId\":$SELF_ID}}}")"
+  [[ "$(j "$R" '.result.structuredContent.tab.tabId')" == "$SELF_ID" ]] && ok "go_forward: 応答OK" || { fail "go_forwardが失敗"; head_ "$R"; }
+fi
+
+# 12d. navigate_tab（遷移前URL=example.com側、tabAfter=example.org側）
+if [[ -n "$SELF_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"navigate_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"url\":\"https://example.org/\"}}}")"
+  AFT="$(j "$R" -r '.result.structuredContent.tabAfter.url // empty')"
+  [[ "$AFT" == *"example.org"* ]] && ok "navigate_tab: tabAfter=$AFT" || { fail "navigate_tabのtabAfterが不正"; head_ "$R"; }
+fi
+
+# 12e. reload_tab
+if [[ -n "$SELF_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"tools/call\",\"params\":{\"name\":\"reload_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"bypassCache\":true}}}")"
+  [[ "$(j "$R" '.result.structuredContent.tab.tabId')" == "$SELF_ID" ]] && ok "reload_tab(bypassCache=true): 応答OK" || { fail "reload_tabが失敗"; head_ "$R"; }
+fi
+
+# 12f. page_scroll down/up（scrollY実測）
+if [[ -n "$SELF_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"tools/call\",\"params\":{\"name\":\"page_scroll\",\"arguments\":{\"tabId\":$SELF_ID,\"direction\":\"down\",\"amount\":600}}}")"
+  SY="$(j "$R" '.result.structuredContent.scrollY')"
+  [[ -n "$SY" && "$SY" != "null" ]] && ok "page_scroll(down): scrollY=$SY" || { fail "page_scroll(down)が失敗"; head_ "$R"; }
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":19,\"method\":\"tools/call\",\"params\":{\"name\":\"page_scroll\",\"arguments\":{\"tabId\":$SELF_ID,\"direction\":\"up\",\"amount\":10000}}}")"
+  SY="$(j "$R" '.result.structuredContent.scrollY')"
+  [[ -n "$SY" && "$SY" != "null" ]] && ok "page_scroll(up): scrollY=$SY" || { fail "page_scroll(up)が失敗"; head_ "$R"; }
+fi
+
+# 12g. 対象ガード: WRITE開始時に開いていた非活性ユーザータブへの書込みは拒否
+if [[ -n "$BG2" && "$BG2" != "null" && -n "$SELF_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":20,\"method\":\"tools/call\",\"params\":{\"name\":\"page_scroll\",\"arguments\":{\"tabId\":$BG2,\"direction\":\"down\",\"amount\":100}}}")"
+  _JQX_FALLBACK=''
+  TERR="$(j "$R" -r '.result.content[0].text // empty')"
+  if [[ "$TERR" == *"書込み許可集合の外"* ]]; then
+    ok "対象ガード: ユーザータブ(tabId=$BG2)へのpage_scrollは拒否"
+  else
+    fail "対象ガードが効いていない（ユーザータブに書けてしまった可能性）"; head_ "$R"
+  fi
+else
+  echo "  [info] 非活性タブが無いので対象ガードの実験は省略"
+fi
+
+# 12h. page_fill: httpbinのフォームに2欄一括入力（httpbin落ちなら手動観察に格下げ）
+FILL_J=""
+if [[ -n "$SELF_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"navigate_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"url\":\"https://httpbin.org/forms/post\"}}}")"
+  AFT="$(j "$R" -r '.result.structuredContent.tabAfter.url // empty')"
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"page_fill\",\"arguments\":{\"tabId\":$SELF_ID,\"fields\":[{\"selector\":\"[name=custname]\",\"value\":\"rinka実機テスト\"},{\"selector\":\"[name=custtel]\",\"value\":\"09000000000\"}]}}}")"
+  F_N="$(j "$R" '.result.structuredContent.fields | length')"
+  if [[ "$F_N" == "2" ]]; then
+    ok "page_fill: 2欄一括入力（custname/custtel on $AFT）"
+    echo "  ※ Firefox側のタブで入力欄が埋まっているか目視確認を（合成イベントなので送信は押さない）"
+  else
+    echo "  [info] page_fillが2欄でない($F_N)。httpbinが落ちていれば手動観察に格下げ: $(head -c 120 <<<"$R" | tr '\n' ' ')"
+  fi
+fi
+
+# 12i. close_tab: 自開タブを閉じて原状復帰
+if [[ -n "$SELF_ID" && "$SELF_ID" != "null" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"close_tab\",\"arguments\":{\"tabId\":$SELF_ID}}}")"
+  CLOSED_URL="$(j "$R" -r '.result.structuredContent.tab.url // empty')"
+  [[ -n "$CLOSED_URL" ]] && ok "close_tab($SELF_ID): 実行前URL=$CLOSED_URL（監査の正本として応答に残る）" \
+                          || { fail "close_tabが失敗"; head_ "$R"; }
+fi
+
+# 12j. 監査に書込み記録（write:1 + 実行前URL）
+if [[ -f "$AUDIT" ]]; then
+  if grep -q '"write":1' "$AUDIT"; then
+    ok "監査にwrite:1あり（直近の書込み: $(grep '"write":1' "$AUDIT" | tail -1 | head -c 160)…）"
+  else
+    fail "監査にwrite:1が無い"
+  fi
+fi
+
+# 12k. 補足: WRITE自動落下の観察法（Firefox起動時に限る）
+echo "  [info] WRITE自動落ちの観察は RINKA_WRITE_TIMEOUT_SECONDS=20 でFirefoxを起動し直し、"
+echo "         WRITEのまま放置して20秒後にreadが弾かれることで見る（このスクリプトの外の一手順）"
+
+# ---- 13. OFF＝プロセス消失（家規1・対話） ----
+echo ""
+read -r -p "Firefoxのrinkaボタンをもう1回クリックしてOFFにしてEnterを押してください: "
 if curl -s -o /dev/null --max-time 3 -X POST "$URL" -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' -d '{"jsonrpc":"2.0","id":9,"method":"ping"}' 2>/dev/null; then
   fail "まだ繋がる（プロセスが消えていない）"
 else
