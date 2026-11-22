@@ -5,6 +5,12 @@
 #   bash tools/field-test.sh               # 全観察点（OFF確認は対話）
 #   SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛ばす
 #
+# 差し替え可能な検査URL（example.comが到達不能な環境向け）:
+#   RINKA_FT_URL      既定 https://example.com/   open_tab/page_click用（<a>が1点だけのページであること）
+#   RINKA_FT_URL2     既定 https://example.org/   navigate_tab用
+#   RINKA_FT_FORM_URL 既定 https://httpbin.org/forms/post  page_fill用（[name=custname]/[name=custtel]があること）
+#   FT_WAIT           既定 15  読込コミット待ちの上限秒
+#
 # 見る点: initialize / tools/list(14) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
 #         read_tab wrapper / search_history / event page持続 / READ時書込み拒否 /
 #         WRITE書込み10本往復（open→click→back→forward→navigate→reload→scroll→fill→close）/
@@ -17,6 +23,10 @@ set -uo pipefail
 URL="${RINKA_URL:-http://127.0.0.1:8765/mcp}"
 TOKEN_FILE="${RINKA_TOKEN_PATH:-$HOME/.config/rinka/token}"
 AUDIT="${RINKA_AUDIT_PATH:-$HOME/.config/rinka/audit.jsonl}"
+FT_URL="${RINKA_FT_URL:-https://example.com/}"
+FT_URL2="${RINKA_FT_URL2:-https://example.org/}"
+FT_FORM_URL="${RINKA_FT_FORM_URL:-https://httpbin.org/forms/post}"
+FT_WAIT="${FT_WAIT:-15}"
 TOKEN="$(cat "$TOKEN_FILE" 2>/dev/null || true)"
 FAILED=0
 
@@ -33,6 +43,23 @@ req() { # req <json> → 応答本文（接続断は空文字）
 j() { # j <json> [jqオプション…] <filter> → そのJSONに適用（失敗は代替値）
   local json="$1"; shift
   jq "$@" 2>/dev/null <<<"$json" || echo "$_JQX_FALLBACK"
+}
+
+tab_url() { # tab_url <tabId> → そのタブのURL（list_tabs実測。取れなければ空）
+  local r ur
+  r="$(req '{"jsonrpc":"2.0","id":90,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}')"
+  ur="$(jq -r --argjson t "$1" '[.result.structuredContent.tabs[] | select(.tabId == $t)][0].url // ""' <<<"$r" 2>/dev/null || echo '')"
+  printf '%s' "$ur"
+}
+
+wait_tab_http() { # wait_tab_http <tabId> [tries] → タブがhttp(s)に遷移するまで待つ（既定15回×1秒）
+  local i u
+  for ((i = 0; i < ${2:-$FT_WAIT}; i++)); do
+    u="$(tab_url "$1")"
+    [[ "$u" == http* ]] && return 0
+    sleep 1
+  done
+  return 1
 }
 
 command -v curl >/dev/null || { echo "curl が必要です"; exit 64; }
@@ -144,7 +171,7 @@ fi
 
 # ---- 11. v2: READ状態での書込み拒否（一次/二次modeガード） ----
 echo ""
-R="$(req '{"jsonrpc":"2.0","id":10,"method":"tools/call","params":{"name":"open_tab","arguments":{"url":"https://example.com/"}}}')"
+R="$(req "{\"jsonrpc\":\"2.0\",\"id\":10,\"method\":\"tools/call\",\"params\":{\"name\":\"open_tab\",\"arguments\":{\"url\":\"$FT_URL\"}}}")"
 _JQX_FALLBACK=''
 WERR="$(j "$R" -r '.result.content[0].text // empty')"
 if [[ "$WERR" == *"WRITE"* ]]; then
@@ -162,7 +189,7 @@ TABS2="$(j "$R" -c '.result.structuredContent.tabs')"
 BG2="$(jq '[.[] | select(.active != true)][0].tabId' <<<"$TABS2" 2>/dev/null || echo '')"
 
 # 12a. open_tab（自開タブになる）
-R="$(req '{"jsonrpc":"2.0","id":12,"method":"tools/call","params":{"name":"open_tab","arguments":{"url":"https://example.com/"}}}')"
+R="$(req "{\"jsonrpc\":\"2.0\",\"id\":12,\"method\":\"tools/call\",\"params\":{\"name\":\"open_tab\",\"arguments\":{\"url\":\"$FT_URL\"}}}")"
 _JQX_FALLBACK=''
 SELF_ID="$(j "$R" '.result.structuredContent.tab.tabId')"
 if [[ -n "$SELF_ID" && "$SELF_ID" != "null" ]]; then
@@ -172,37 +199,57 @@ else
   fail "open_tabが失敗"; head_ "$R"; SELF_ID=""
 fi
 
-# 12b. page_click（example.comの<a>は1点だけ→セレクタ一意）
-if [[ -n "$SELF_ID" ]]; then
+# 12a'. 読込コミット待ち（Firefoxのtabs.create直後は遷移前なのでabout:blank。コミット前に書くと固定リミッタで弾かれる）
+LOADED=0
+if [[ -n "$SELF_ID" && "$SELF_ID" != "null" ]]; then
+  echo "  $FT_URL の読込コミット待ち（最大${FT_WAIT}秒）…"
+  if wait_tab_http "$SELF_ID"; then
+    ok "open先タブの読込確認: $(tab_url "$SELF_ID")"
+    LOADED=1
+  else
+    fail "自開タブがhttp URLに遷移しない: [$(tab_url "$SELF_ID")]（$FT_URL への到達性を確認: DNS/プロキシ/ファイアウォール。代替URLは RINKA_FT_URL で差し替え）"
+    echo "  [info] 読込未コミットなのでclick/back/forward/navigate/reload/scroll/fillは省略（mode・対象ガードはこのログで検証済み）"
+  fi
+fi
+
+# 12b. page_click（<a> が1点だけのページ想定。FT_URL差し替え時はセレクタ一意性の確認を）
+if [[ "$LOADED" == "1" ]]; then
   R="$(req "{\"jsonrpc\":\"2.0\",\"id\":13,\"method\":\"tools/call\",\"params\":{\"name\":\"page_click\",\"arguments\":{\"tabId\":$SELF_ID,\"selector\":\"a\"}}}")"
   EL="$(j "$R" -r '.result.structuredContent.element // empty')"
-  [[ -n "$EL" ]] && ok "page_click('a'): element=$EL（example.comのmoreinfoへ遷移する）" \
+  [[ -n "$EL" ]] && ok "page_click('a'): element=$EL" \
                   || { fail "page_clickが失敗"; head_ "$R"; }
 fi
 
 # 12c. go_back / go_forward（直前の遷移履歴を使う）
-if [[ -n "$SELF_ID" ]]; then
+if [[ "$LOADED" == "1" ]]; then
   R="$(req "{\"jsonrpc\":\"2.0\",\"id\":14,\"method\":\"tools/call\",\"params\":{\"name\":\"go_back\",\"arguments\":{\"tabId\":$SELF_ID}}}")"
   [[ "$(j "$R" '.result.structuredContent.tab.tabId')" == "$SELF_ID" ]] && ok "go_back: 応答OK" || { fail "go_backが失敗"; head_ "$R"; }
   R="$(req "{\"jsonrpc\":\"2.0\",\"id\":15,\"method\":\"tools/call\",\"params\":{\"name\":\"go_forward\",\"arguments\":{\"tabId\":$SELF_ID}}}")"
   [[ "$(j "$R" '.result.structuredContent.tab.tabId')" == "$SELF_ID" ]] && ok "go_forward: 応答OK" || { fail "go_forwardが失敗"; head_ "$R"; }
 fi
 
-# 12d. navigate_tab（遷移前URL=example.com側、tabAfter=example.org側）
-if [[ -n "$SELF_ID" ]]; then
-  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"navigate_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"url\":\"https://example.org/\"}}}")"
+# 12d. navigate_tab（tabAfterは遷移直後のスナップショット。コミット前ならlist_tabs再照会で刈り取り）
+if [[ "$LOADED" == "1" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"navigate_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"url\":\"$FT_URL2\"}}}")"
   AFT="$(j "$R" -r '.result.structuredContent.tabAfter.url // empty')"
-  [[ "$AFT" == *"example.org"* ]] && ok "navigate_tab: tabAfter=$AFT" || { fail "navigate_tabのtabAfterが不正"; head_ "$R"; }
+  if [[ "$AFT" != *"$FT_URL2"* ]]; then
+    sleep 2
+    AFT2="$(tab_url "$SELF_ID")"
+    if [[ "$AFT2" == *"$FT_URL2"* ]]; then
+      AFT="$AFT2（list_tabs再照会: resp採取がコミット前だった）"
+    fi
+  fi
+  [[ "$AFT" == *"$FT_URL2"* ]] && ok "navigate_tab: tabAfter=$AFT" || { fail "navigate_tabのtabAfterが不正"; head_ "$R"; }
 fi
 
 # 12e. reload_tab
-if [[ -n "$SELF_ID" ]]; then
+if [[ "$LOADED" == "1" ]]; then
   R="$(req "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"tools/call\",\"params\":{\"name\":\"reload_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"bypassCache\":true}}}")"
   [[ "$(j "$R" '.result.structuredContent.tab.tabId')" == "$SELF_ID" ]] && ok "reload_tab(bypassCache=true): 応答OK" || { fail "reload_tabが失敗"; head_ "$R"; }
 fi
 
 # 12f. page_scroll down/up（scrollY実測）
-if [[ -n "$SELF_ID" ]]; then
+if [[ "$LOADED" == "1" ]]; then
   R="$(req "{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"tools/call\",\"params\":{\"name\":\"page_scroll\",\"arguments\":{\"tabId\":$SELF_ID,\"direction\":\"down\",\"amount\":600}}}")"
   SY="$(j "$R" '.result.structuredContent.scrollY')"
   [[ -n "$SY" && "$SY" != "null" ]] && ok "page_scroll(down): scrollY=$SY" || { fail "page_scroll(down)が失敗"; head_ "$R"; }
@@ -225,18 +272,22 @@ else
   echo "  [info] 非活性タブが無いので対象ガードの実験は省略"
 fi
 
-# 12h. page_fill: httpbinのフォームに2欄一括入力（httpbin落ちなら手動観察に格下げ）
+# 12h. page_fill: フォームに2欄一括入力（フォーム先が落ちなら手動観察に格下げ）
 FILL_J=""
-if [[ -n "$SELF_ID" ]]; then
-  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"navigate_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"url\":\"https://httpbin.org/forms/post\"}}}")"
+if [[ "$LOADED" == "1" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":21,\"method\":\"tools/call\",\"params\":{\"name\":\"navigate_tab\",\"arguments\":{\"tabId\":$SELF_ID,\"url\":\"$FT_FORM_URL\"}}}")"
   AFT="$(j "$R" -r '.result.structuredContent.tabAfter.url // empty')"
-  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"page_fill\",\"arguments\":{\"tabId\":$SELF_ID,\"fields\":[{\"selector\":\"[name=custname]\",\"value\":\"rinka実機テスト\"},{\"selector\":\"[name=custtel]\",\"value\":\"09000000000\"}]}}}")"
-  F_N="$(j "$R" '.result.structuredContent.fields | length')"
-  if [[ "$F_N" == "2" ]]; then
-    ok "page_fill: 2欄一括入力（custname/custtel on $AFT）"
-    echo "  ※ Firefox側のタブで入力欄が埋まっているか目視確認を（合成イベントなので送信は押さない）"
+  if ! wait_tab_http "$SELF_ID" 10; then
+    echo "  [info] フォーム先（$FT_FORM_URL）が読込未コミット。page_fillは手動観察に格下げ"
   else
-    echo "  [info] page_fillが2欄でない($F_N)。httpbinが落ちていれば手動観察に格下げ: $(head -c 120 <<<"$R" | tr '\n' ' ')"
+    R="$(req "{\"jsonrpc\":\"2.0\",\"id\":22,\"method\":\"tools/call\",\"params\":{\"name\":\"page_fill\",\"arguments\":{\"tabId\":$SELF_ID,\"fields\":[{\"selector\":\"[name=custname]\",\"value\":\"rinka実機テスト\"},{\"selector\":\"[name=custtel]\",\"value\":\"09000000000\"}]}}}")"
+    F_N="$(j "$R" '.result.structuredContent.fields | length')"
+    if [[ "$F_N" == "2" ]]; then
+      ok "page_fill: 2欄一括入力（custname/custtel on $AFT）"
+      echo "  ※ Firefox側のタブで入力欄が埋まっているか目視確認を（合成イベントなので送信は押さない）"
+    else
+      echo "  [info] page_fillが2欄でない($F_N)。フォーム先が落ちていれば手動観察に格下げ: $(head -c 120 <<<"$R" | tr '\n' ' ')"
+    fi
   fi
 fi
 

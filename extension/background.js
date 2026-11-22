@@ -80,8 +80,16 @@ function requireHttpUrl(raw) {
 
 /** 書込み対象タブのURL: http/https のみ（内部ページへの書込みは固定拒否）。 */
 function requireHttpTab(tab) {
-  if (!/^https?:\/\//i.test(tab.url ?? "")) {
-    throw new Error("内部ページへの書込みは固定拒否です: " + (tab.url ?? "(URLなし)") + "（書込み先はhttp/httpsのタブのみ）");
+  const u = tab.url ?? "";
+  if (u === "about:blank" || u === "") {
+    // 実機 2026-11-22: open_tab 直後は遷移コミット前なのでここに入る。固定拒否は不変だが案内を分ける
+    throw new Error(
+      "このタブはまだページの読込が完了していません（about:blank）。画面が表示されてから書き込んでください。" +
+        "ずっとabout:blankのままなら外部サイトへの到達性（ネットワーク・DNS・プロキシ）の確認を。書込み先はhttp/httpsのタブのみです"
+    );
+  }
+  if (!/^https?:\/\//i.test(u)) {
+    throw new Error("内部ページへの書込みは固定拒否です: " + u + "（書込み先はhttp/httpsのタブのみ）");
   }
 }
 
@@ -287,7 +295,11 @@ async function handleReq(m) {
     const active = args.active !== false; // 既定true
     const tab = await browser.tabs.create({ url: args.url, active });
     selfTabs.add(tab.id); // 開いた瞬間に自開タブ＝書込み対象になる
-    return { tab: tabInfo(tab) };
+    const info = tabInfo(tab);
+    // Firefox既知挙動（MDN記載・2026-11-22実機で確認）: tabs.create 直後の Tab.url は遷移コミット前なので
+    // about:blankを返す。open_tabのresp/監査の正本は「開こうとしたURL」。実コミット状態はlist_tabsで観察する
+    if (info.url === "" || info.url === "about:blank") info.url = args.url;
+    return { tab: info };
   }
   if (cmd === "tabs/close") {
     guardWrite(cmd, args);
@@ -388,7 +400,7 @@ function resetWriteTimer() {
   }
 }
 
- /** WRITE→READ（自動落ち・host死亡時共通）。対象集合を消すので以後の書込みは自開タブも不可になる。 */
+/** WRITE→READ（自動落ち・host死亡時共通）。対象集合を消すので以後の書込みは自開タブも不可になる。 */
 function exitWriteToRead() {
   mode = "read";
   if (writeTimer !== null) {
