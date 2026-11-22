@@ -2,8 +2,10 @@
  * rinka native-host/src/http.ts — HTTP素。POST /mcp のみ。
  *
  * - Bearer トークン必須（定数時間比較）。不一致は401（tokenMatchesをexportしてテストも見る）
- * - Origin 絡みの防御: Originヘッダが付いていて localhost 系でなければ403
- *   （ブラウザ以外のMCPクライアントは通常Originを送らない）
+ * - Origin 絡みの防御: Originヘッダは localhost 系と chat/vibe.mistral.ai
+ *   （Vibe Work のコネクタ接続ダイアログの発信Origin）のみ許可。他は403
+ *   （ブラウザ以外のMCPクライアントは通常Originを送らない。Originはブラウザしか
+ *   付けられず偽装不可なので、認証は変わらずBearer鍵一つ）
  * - セッションレス: state はこのプロセス内に持たない（鍵はBearer一つで十分・保守点減）
  * - ボディ上限 1MB、超過は413
  * - JSONパース失敗は -32700 を 400 で返す
@@ -28,7 +30,14 @@ export type HttpDeps = {
 };
 
 const BODY_MAX = 1024 * 1024;
-const LOCAL_ORIGIN = /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i;
+/** Origin許可リスト: localhost系（ローカルの開発用ページ）と Mistral の公式UI
+ *  （Vibe Work のConnectダイアログはブラウザ側fetchでOriginを付けて検証する）。
+ *  https固定・port無し。それ以外にOriginを付けて来る相手は403。 */
+const ALLOWED_ORIGINS: readonly RegExp[] = [
+  /^https?:\/\/(localhost|127\.0\.0\.1|\[::1\])(:\d+)?$/i,
+  /^https:\/\/(chat|vibe)\.mistral\.ai$/i,
+];
+const originAllowed = (origin: string): boolean => ALLOWED_ORIGINS.some((re) => re.test(origin));
 
 /** 定数時間比較（長さが違っても速攻で抜けないよう、自身と比較してタイミングを均す）。 */
 export const tokenMatches = (received: string | undefined, expected: string): boolean => {
@@ -93,9 +102,9 @@ export const startServer = async (deps: HttpDeps): Promise<RunningServer> => {
           return;
         }
 
-        // ---- Origin 防御（DNS rebinding向け） ----
+        // ---- Origin 防御（DNS rebinding向け。許可リスト外は403） ----
         const origin = req.headers.origin;
-        if (origin !== undefined && !LOCAL_ORIGIN.test(origin)) {
+        if (origin !== undefined && !originAllowed(origin)) {
           send(res, 403, { error: "rinka: 許可しない Origin です" });
           return;
         }

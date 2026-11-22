@@ -571,6 +571,16 @@ test("http: Origin付きは403 / localhost Originは通す", async () => {
   assert.equal((await fetch(base, { method: "POST", headers: { ...H, Origin: `http://localhost:${srv.port}` }, body: PING })).status, 200);
 });
 
+test("http: Mistral系Origin（Vibe Work のConnectダイアログ）は通す / 類似偽Originは403", async () => {
+  assert.equal((await fetch(base, { method: "POST", headers: { ...H, Origin: "https://chat.mistral.ai" }, body: PING })).status, 200);
+  assert.equal((await fetch(base, { method: "POST", headers: { ...H, Origin: "https://vibe.mistral.ai" }, body: PING })).status, 200);
+  // 偽装兄弟: サブドメイン・http・port付き・パス綴りは全て403
+  assert.equal((await fetch(base, { method: "POST", headers: { ...H, Origin: "https://chat.mistral.ai.evil.example" }, body: PING })).status, 403);
+  assert.equal((await fetch(base, { method: "POST", headers: { ...H, Origin: "http://chat.mistral.ai" }, body: PING })).status, 403);
+  assert.equal((await fetch(base, { method: "POST", headers: { ...H, Origin: "https://chat.mistral.ai:8443" }, body: PING })).status, 403);
+  assert.equal((await fetch(base, { method: "POST", headers: { ...H, Origin: "https://evil.example/chat.mistral.ai" }, body: PING })).status, 403);
+});
+
 test("http: 壊JSONは400 -32700", async () => {
   const r = await fetch(base, { method: "POST", headers: H, body: "{oops" });
   assert.equal(r.status, 400);
