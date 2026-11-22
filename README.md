@@ -52,7 +52,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 1. **一次modeガード（addon）**: 書込みcmdはWRITE状態でなければ拒否（案内文言付き）
 2. **対象ガード（addon）**: WRITE区間中にrinka自身が `open_tab` した自開タブ＋WRITE突入時のアクティブタブ1枚のみ書込み可。それ以外のユーザータブは拒否。`activate_tab` は全タブ可だが対象集合を拡張しない
-3. **二次modeガート9（host）**: tools.ts が直前のmode通知と突き合わせ、不整合なら拒否（addon改竄・bugへの保険）
+3. **二次modeガード（host）**: tools.ts が直前のmode通知と突き合わせ、不整合なら拒否（addon改竄・bugへの保険）
 
 固定リミッタ（設定で解けない固定線）:
 
@@ -83,7 +83,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 | --- | --- | --- |
 | `RINKA_WRITE_TIMEOUT_SECONDS` | 1800 | WRITE自動落ち秒数（1〜86400。書込みcmd毎にリセット） |
 | `RINKA_SUDO_FILL` | false | password欄へのfill許可（`1/true/yes` 以外は起動拒否・boolStrict） |
-| `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りllowlist（空=全URL許可。境界照合） |
+| `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りallowlist（空=全URL許可。境界照合） |
 | `RINKA_FILL_MAX_BYTES` | 4096 | fill値の1欄あたりバイト上限 |
 
 既存（v1）: `RINKA_TOKEN` / `RINKA_TOKEN_PATH` / `RINKA_HOST`（localhost系のみ）/ `RINKA_PORT` / `RINKA_READ_MAX_BYTES` / `RINKA_SCREENSHOT_MAX_BYTES` / `RINKA_HISTORY_MAX_ROWS` / `RINKA_AUDIT_PATH`。未知の `RINKA_*` は起動拒否。
@@ -173,7 +173,7 @@ Vibe Work実接続（2026-11-22 本番経路・main 36a60e4時点）:
 
 - Vibe Code CLI (stdio transport) 直結
 - AMO公開
-- sudoなし運用の实データによる検証
+- sudoなし運用の実データによる検証
 
 ## ライセンス
 
