@@ -15,7 +15,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 ```
 
 - **トグル = プロセス管理**。ON: アドオンが `connectNative("rinka")` → Firefoxがhostをspawn → hostが `127.0.0.1:8765/mcp` を開き `{t:"ready", port}` を返す。OFF: `port.disconnect()` → Firefoxがhostをkill → リスナー消滅。「露出は使用時のみ」を手順でなくOSが強制する。
-- READ→WRITEはプロセスを增やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
+- READ→WRITEはプロセスを増やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
 - ページ読み取りは innerText（依存ゼロ・SPA対応）。履歴は `browser.history` API のみで、生の `places.sqlite` には触らない。
 - privateウィンドウは `incognito: "not_allowed"` によりアドオンから機械的に不可視。
 
@@ -52,7 +52,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 1. **一次modeガード（addon）**: 書込みcmdはWRITE状態でなければ拒否（案内文言付き）
 2. **対象ガード（addon）**: WRITE区間中にrinka自身が `open_tab` した自開タブ＋WRITE突入時のアクティブタブ1枚のみ書込み可。それ以外のユーザータブは拒否。`activate_tab` は全タブ可だが対象集合を拡張しない
-3. **二次modeガード（host）**: tools.ts が直前のmode通知と突き合わせ、不整合なら拒否（addon改竄・bugへの保険）
+3. **二次modeガート9（host）**: tools.ts が直前のmode通知と突き合わせ、不整合なら拒否（addon改竄・bugへの保険）
 
 固定リミッタ（設定で解けない固定線）:
 
@@ -83,7 +83,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 | --- | --- | --- |
 | `RINKA_WRITE_TIMEOUT_SECONDS` | 1800 | WRITE自動落ち秒数（1〜86400。書込みcmd毎にリセット） |
 | `RINKA_SUDO_FILL` | false | password欄へのfill許可（`1/true/yes` 以外は起動拒否・boolStrict） |
-| `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りallowlist（空=全URL許可。境界照合） |
+| `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りllowlist（空=全URL許可。境界照合） |
 | `RINKA_FILL_MAX_BYTES` | 4096 | fill値の1欄あたりバイト上限 |
 
 既存（v1）: `RINKA_TOKEN` / `RINKA_TOKEN_PATH` / `RINKA_HOST`（localhost系のみ）/ `RINKA_PORT` / `RINKA_READ_MAX_BYTES` / `RINKA_SCREENSHOT_MAX_BYTES` / `RINKA_HISTORY_MAX_ROWS` / `RINKA_AUDIT_PATH`。未知の `RINKA_*` は起動拒否。
@@ -113,7 +113,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 5. **READする**: ツールバーのrinkaアイコンをクリック。バッジ `ON`（琥珀）。もう1回クリックで `W`（赤）＝WRITE。
 
-6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。リモート（Vibe Workウェブ版）から繋く場合は `tailscale funnel 8765` でhttps化したURL `https://<tailnet>.ts.net/mcp` を使い、用が済んだら Funnel を閉じる（露出は使用時のみ）。
+6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。リモート（Vibe Workウェブ版）から繋ぐ場合は `tailscale funnel 8765` でhttps化したURL `https://<tailnet>.ts.net/mcp` を使い、用が済んだら Funnel を閉じる（露出は使用時のみ）。
 
 ## テスト
 
@@ -173,7 +173,7 @@ Vibe Work実接続（2026-11-22 本番経路・main 36a60e4時点）:
 
 - Vibe Code CLI (stdio transport) 直結
 - AMO公開
-- sudoなし運用の実データによる検証
+- sudoなし運用の实データによる検証
 
 ## ライセンス
 
