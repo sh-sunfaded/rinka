@@ -131,7 +131,7 @@ bash tools/field-test.sh              # initialize → 14ツール → 401 → �
 SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛ばす
 ```
 
-WRITE自動落ちの観察は `RINKA_WRITE_TIMEOUT_SECONDS=20` でFirefoxを起動し直して初めて可能（プロセスspawn時に読まれるため）。WRITEのまま放置し、20秒後に書込みが弾かれることで確認する。
+WRITE自動落ちの観察は `RINKA_WRITE_TIMEOUT_SECONDS=20` でFirefoxを起動し直して初めて可能（プロセスspawn時に読まれるため）。Firefoxの起動環境で渡せない場合はlauncher（rinka-host.sh）側でexportしても同じ（hostはONトグル毎にspawnされる）。WRITEのまま放置し、20秒後に書込みが弾かれることで確認する。
 
 検査URLが到達不能な環境では `RINKA_FT_URL` / `RINKA_FT_URL2` / `RINKA_FT_FORM_URL` で差し替えられる（既定は example.com / example.org / httpbin.org）。
 
@@ -158,7 +158,7 @@ v2（2026-11-22 実環境第2回検収・コミットec4fa74）:
 - [x] `page_fill` 成功系（Wikipedia検索box 1欄に実埋め。応答はselector+valueLengthのみ（23字・13字）、Firefox側目視で入力を確認。httpbin代替は不調だったためVibe Work本番経路で代用）
 - [x] WRITE突入時のアクティブタブ（entryActiveTabId）への直接書込み（page_scrollが許可集合内で受付。当該ページが内部スクロール容器のSPAでscrollYは0のまま、受付と応答はOK。main frameスクロール外はページ起因の既知限界）
 - [x] 長ページでの `page_scroll` 実測（ja.wikipedia Firefox記事: down 1000px → scrollY=1000、up 10000px → 0。example.orgは画面内に収まりscrollY=0のまま、の注記は解消）
-- [ ] `RINKA_WRITE_TIMEOUT_SECONDS=20` でのWRITE自動落ち（Firefox再起動が必要なため未実施）
+- [x] `RINKA_WRITE_TIMEOUT_SECONDS=20` でのWRITE自動落ち（rinka-host.shへの一時追記→OFF→ON→WRITE→20秒以上放置→書込みがWRITE案内文言で弾かれてREADへ落下、直後のREADは可。launcher側のexportでもhostに届く: hostはONトグル毎にspawnされるためFirefox再起動は不要。envがhostに届かない間は既定1800秒のまま落ちないのも仕様通り）
 
 Vibe Work実接続（2026-11-22 本番経路・main 36a60e4時点）:
 
