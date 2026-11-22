@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "rinka",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Vibe MCP橋。ツールバーアイコンでON/OFF。ONの間だけFirefoxの読み取りツール（タブ一覧・本文・スクリーンショット・履歴検索）をVibe Workに貸す。",
   "browser_specific_settings": {
     "gecko": {
@@ -16,6 +16,7 @@
     "default_title": "rinka: クリックでON/OFF切替"
   },
   "permissions": ["tabs", "scripting", "history", "nativeMessaging"],
+  "host_permissions": ["<all_urls>"],
   "incognito": "not_allowed",
   "icons": {
     "48": "icons/icon.svg",

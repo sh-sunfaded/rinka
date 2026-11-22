@@ -61,9 +61,11 @@ Vibe Work ──(HTTPS+Bearer)── 127.0.0.1:8765/mcp ── native-host (node
 
 3. **拡張を読み込む**: `about:debugging` → 「このFirefox」 → 「一時的な拡張機能を読み込む」 → `extension/` を選択。
 
-4. **ONする**: ツールバーのrinkaアイコンをクリック。バッジに `ON` と出る。
+4. **host権限を1回だけ許可する**: Firefox MV3は `host_permissions` を optional 扱いにするため、未許可の間は本文読み取り・screenshotが拒否される。`about:addons` → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を有効化する。
 
-5. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。
+5. **ONする**: ツールバーのrinkaアイコンをクリック。バッジに `ON` と出る。
+
+6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。
 
 ## テスト
 
@@ -82,11 +84,11 @@ SKIP_IDLE=1 bash tools/field-test.sh  # 30秒放置（event page観察）を飛�
 
 ## 実機確認事項（v1で残る・要Firefox実機）
 
-- [ ] `browser.tabs.captureTab` の**非活性タブ**撮影可否とFirefoxのバージョン差
-- [ ] native port 接続中に event page が存続するか（Firefoxは接続中のportを握ってevent pageを殺さないはず）
-- [ ] native messaging のメッセージ上限の向き（chunk分割は廃止済み。captureTab の1メッセージ移送が上限に触るか。触れた場合は15秒タイムアウトとして検出される）
-- [ ] `allowed_extensions` のID: 公開時はAMOのID、一時読み込みは `<id>@<ランダム>` になるので両対応
-- [ ] host spawn 時の working directory と環境変数（HOMEが渡るか。viewer側は `RINKA_TOKEN_PATH` でも救済）
+- [x] native port 接続中に event page が存続するか（2026-11-22 実機: 30秒放置→ping応答OK）
+- [x] `allowed_extensions` のID一致（一時読み込みでも manifest の `gecko.id` が使われた。connectNative接続済み）
+- [x] host spawn 時の working directory と環境変数（HOME 経由でトークン読取OK）
+- [ ] `browser.tabs.captureTab` の**非活性タブ**撮影可否（host権限の許可後に再測。未許可の間はFirefox MV3がAPIをnamespaceに生やさない: 2026-11-22 実機で確認）
+- [ ] native messaging のメッセージ上限の向き（screenshotは権限許可後に実測。触れた場合は15秒タイムアウトとして検出される）
 
 ## v2以降の構想（今は作らない）
 

@@ -31,18 +31,34 @@ async function handleReq(m) {
   }
   if (cmd === "tabs/read") {
     const tab = await browser.tabs.get(args.tabId);
-    const results = await browser.scripting.executeScript({
-      target: { tabId: args.tabId },
-      func: () => {
-        const el = document.body;
-        const text = el ? el.innerText : "";
-        return text.length > 100000 ? text.slice(0, 100000) : text;
-      },
-    });
-    const text = results && results[0] && typeof results[0].result === "string" ? results[0].result : "";
+    let text;
+    try {
+      const results = await browser.scripting.executeScript({
+        target: { tabId: args.tabId },
+        func: () => {
+          const el = document.body;
+          const text = el ? el.innerText : "";
+          return text.length > 100000 ? text.slice(0, 100000) : text;
+        },
+      });
+      text = results && results[0] && typeof results[0].result === "string" ? results[0].result : "";
+    } catch (e) {
+      // Firefox MV3は host_permissions を optional 扱いにする。未許可のタブでは scripting が拒否される
+      throw new Error(
+        "本文の取得が拒否されました（" +
+          (e instanceof Error ? e.message : String(e)) +
+          "）。about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可してください"
+      );
+    }
     return { tab: tabInfo(tab), text };
   }
   if (cmd === "tabs/capture") {
+    if (typeof browser.tabs.captureTab !== "function") {
+      // Firefox MV3は host権限が許可されるまで captureTab をAPIに生やさない（2026-11-22 実機で確認）
+      throw new Error(
+        "screenshotが実行できません: <all_urls> host権限が未許可です。about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可してください（1回だけ）"
+      );
+    }
     const tab = await browser.tabs.get(args.tabId);
     const dataUrl = await browser.tabs.captureTab(args.tabId);
     const b64 = String(dataUrl).split(",")[1] ?? "";
