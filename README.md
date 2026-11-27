@@ -1,6 +1,6 @@
 # rinka（燐火）
 
-Firefox を [Vibe Work](https://vibe.mistral.ai) の Custom MCP Connector に繋ぐ橋。ツールバーアイコン1つで **OFF / READ / WRITE の3状態を循環切替**（OFF→READ→WRITE→OFF）し、AIから自分のブラウザへの読み取り・操作を状態で制御する。READ（バッジON・琥珀）の間は読み取り4ツール、WRITE（バッジW・赤）の間だけ書き込み10ツールが呼べる。書き込みは即時実行・取り消せず、WRITEは放置で自動的にREADへ落ちる。
+Firefox を [Vibe Work](https://vibe.mistral.ai) の Custom MCP Connector に繋ぐ橋。ツールバーアイコン1つで **OFF / READ / WRITE の3状態を循環切替**（OFF→READ→WRITE→OFF）し、AIから自分のブラウザへの読み取り・操作を状態で制御する。READ（バッジON・琥珀）の間は読み取り4ツール、WRITE（バッジW・赤）の間だけ書き込み10ツールが呼べる。書き込みは即時実行・取り消せず、WRITEは放置で自動的にREADへ落ちる。このほかに、既存14工具の呼び出し列を一括実行するマクロ `run_macro` がある（下記）。
 
 ## 特長
 
@@ -51,6 +51,20 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 | `page_fill` | フォーム一括入力（input/textarea/select・1〜20欄・全欄事前検査で1欄不合格なら全欄不実行） |
 | `page_scroll` | 主フレームをスクロール（up/down・1〜10000px） |
 
+### マクロ（受付は両状態で可・実行はステップ毎のガードに従う）
+
+| ツール | 内容 |
+| --- | --- |
+| `run_macro` | 既存14工具の呼び出し列をhost内で連続実行（ステップ1〜20・`dryRun` 既定true） |
+
+- **データであってコードでない**: ステップの `call` は既知14工具名のみ（`run_macro` 自身の再帰は静的拒否）。マクロは新しい能力を足さない（`page_evaluate` 不作成の採決は不変）
+- **ラベル参照**: タブは `open_tab` ステップが束縛したラベル（`"tab": "t1"`）でのみ参照でき、`args` への `tabId` 直指定は受付拒否。書込み先は常にこのマクロで開いた自開タブに閉じる
+- **受付時の静的検査**: ラベルの束縛順序・期待値の語彙・各ステップ引数を、実行前に全部検査する。`dryRun` 既定trueはこの検査のみ（実行は `dryRun:false` を明示）
+- **実行は既存経路**: modeガード・対象ガード・固定リミッタ・監査はステップ毎に作動する（READ時に書込みステップへ当たると、そのステップでWRITE案内文言と共に停止）
+- **fail_fast固定**: 失敗ステップ・期待値不一致で即停止し部分レポートを返す。予算（`RINKA_MACRO_BUDGET_SECONDS`・既定300秒）を超えても打ち切り
+- **期待値（expect）**: 語彙は `urlContains` / `text`（read_tab）と `valueLengths`（page_fill）のみで、当該ステップの結果欄とだけ照合する。遷移系の応答は操作前スナップショットのため期待値評価に使わない
+- **監査**: 受付1行（名前・ステップ数・dryRunのみ）＋ステップ毎の既存監査行。実行時はレポート末尾に `list_tabs` の結果を同梱する（整合確認）
+
 ページ由来の本文・URL・タイトルは信頼できないデータ。ツールの説明に明記し、本文は `<rinka-page-content untrusted="true">` で包んで返す。
 
 操作系ツールの応答に含まれるタブURLは**実行前のスナップショット**（navigate直後のコミット前URLなど）。遷移の成否は `list_tabs` / `read_tab` の追い確認で判定する。
@@ -97,6 +111,7 @@ Origin許可リスト（Vibe Workウェブ版対応）: http層はOriginが loca
 | `RINKA_SUDO_FILL` | false | password欄へのfill許可（`1/true/yes` 以外は起動拒否・boolStrict） |
 | `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りallowlist（空=全URL許可。境界照合） |
 | `RINKA_FILL_MAX_BYTES` | 4096 | fill値の1欄あたりバイト上限 |
+| `RINKA_MACRO_BUDGET_SECONDS` | 300 | `run_macro` の全体予算秒（1〜86400）。超過で打ち切り・部分レポート |
 
 既存（v1）: `RINKA_TOKEN` / `RINKA_TOKEN_PATH` / `RINKA_HOST`（localhost系のみ）/ `RINKA_PORT` / `RINKA_READ_MAX_BYTES` / `RINKA_SCREENSHOT_MAX_BYTES` / `RINKA_HISTORY_MAX_ROWS` / `RINKA_AUDIT_PATH`。未知の `RINKA_*` は起動拒否。
 
@@ -160,7 +175,7 @@ Origin許可リスト（Vibe Workウェブ版対応）: http層はOriginが loca
 実環境の疎通・観察点を1コマンドで回す（要 curl + jq）:
 
 ```sh
-bash tools/field-test.sh              # initialize → 14ツール → 401 → 撮影 → 30秒放置 → 監査
+bash tools/field-test.sh              # initialize → 15ツール → 401 → 撮影 → 30秒放置 → 監査
                                        # → READ時書込み拒否 → 対話: WRITEへ → 書込み10本往復
                                        # ＋対象ガード → OFF確認
 SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛ばす

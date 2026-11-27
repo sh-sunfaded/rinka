@@ -95,3 +95,30 @@ export const isHistoryRow = (v: unknown): v is HistoryRow =>
 /** fill応答の1欄。値そのものは応響にも乗らない（selectorと長さのみ）。 */
 export const isFillFieldResult = (v: unknown): v is FillFieldResult =>
   isRecord(v) && typeof v.selector === "string" && typeof v.valueLength === "number";
+
+// ---- v3 マクロ（run_macro・仕様会議第1回 2026-11-27採決） ----
+
+/** ステップの期待値。語彙はurlContains/text/valueLengthsのみで、評価は当該ステップの結果欄に対して行う
+ *  （遷移系の応答は操作前スナップショットのため期待値評価の対象外）。 */
+export type MacroExpect = {
+  urlContains?: string;
+  text?: string;
+  valueLengths?: number[];
+};
+
+/** run_macro の1ステップ。callは既存工具名・tabはラベル参照（argsにtabIdは入れない）。 */
+export type MacroStep = {
+  call: string;
+  tab?: string;
+  args: Record<string, unknown>;
+  expect?: MacroExpect;
+};
+
+/** マクロステップの形状ガード（fail-closed。語彙・ラベル生命周期は tools.ts の静的検査が担う）。 */
+export const isMacroStep = (v: unknown): v is MacroStep =>
+  isRecord(v) &&
+  typeof v.call === "string" &&
+  v.call.length > 0 &&
+  (v.tab === undefined || typeof v.tab === "string") &&
+  isRecord(v.args) &&
+  (v.expect === undefined || isRecord(v.expect));

@@ -11,8 +11,9 @@
 #   RINKA_FT_FORM_URL 既定 https://httpbin.org/forms/post  page_fill用（[name=custname]/[name=custtel]があること）
 #   FT_WAIT           既定 15  読込コミット待ちの上限秒
 #
-# 見る点: initialize / tools/list(14) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
+# 見る点: initialize / tools/list(15) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
 #         read_tab wrapper / search_history / event page持続 / READ時書込み拒否 /
+#         v3マクロ（READ静的検査dryRun・READ読み取り実行・READ書込みstep停止・WRITE open→close往復・監査受付1行）/
 #         WRITE書込み10本往復（open→click→back→forward→navigate→reload→scroll→fill→close）/
 #         対象ガード（非活性ユーザータブ拒否）/ 監査write:1+url / OFF＝プロセス消失 / 監査本文なし
 # WRITE自動落ちの観察はRINKA_WRITE_TIMEOUT_SECONDS（既定1800）が絡むためFirefox起動時に
@@ -78,7 +79,7 @@ NAME="$(j "$R" -r '.result.serverInfo.name // empty')"
 R="$(req '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
 _JQX_FALLBACK=0
 N="$(j "$R" '.result.tools | length')"
-[[ "$N" == "14" ]] && ok "tools/list: 14ツール（読み取り4＋書込み10）" || { fail "tools/listが14ツールでない($N)"; head_ "$R"; }
+[[ "$N" == "15" ]] && ok "tools/list: 15ツール（読み取り4＋書込み10＋マクロ1）" || { fail "tools/listが15ツールでない($N)"; head_ "$R"; }
 
 # ---- 3. list_tabs（活性と非活性のIDを採る） ----
 R="$(req '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}')"
@@ -178,6 +179,38 @@ if [[ "$WERR" == *"WRITE"* ]]; then
   ok "READ時のopen_tabは拒否: ${WERR:0:70}…"
 else
   fail "READ時のopen_tabが拒否されていない"; head_ "$R"
+fi
+
+# ---- 11m. v3: READ状態でのrun_macro dryRun（既定true=静的検査のみ。READでも通る） ----
+R="$(req '{"jsonrpc":"2.0","id":24,"method":"tools/call","params":{"name":"run_macro","arguments":{"name":"field-dry","steps":[{"call":"list_tabs","args":{}},{"call":"search_history","args":{"query":"github","limit":3}}]}}}')"
+_JQX_FALLBACK=''
+DRY="$(j "$R" -r '.result.structuredContent.dryRun // empty')"
+if [[ "$DRY" == "true" ]]; then
+  ok "run_macro dryRun（既定true）: READでも静的検査は通る（steps=$(j "$R" '.result.structuredContent.steps | length')件・実行はしない）"
+else
+  fail "run_macro dryRunがREADで通らない"; head_ "$R"
+fi
+
+# ---- 11m'. v3: READ状態で読み取りstepのみのマクロ実行（modeガードはステップ毎なのでREADでも実行可） ----
+R="$(req '{"jsonrpc":"2.0","id":25,"method":"tools/call","params":{"name":"run_macro","arguments":{"name":"field-read","dryRun":false,"steps":[{"call":"list_tabs","args":{}}]}}}')"
+_JQX_FALLBACK=''
+MOK="$(j "$R" '.result.structuredContent.ok')"
+MTABS="$(j "$R" '.result.structuredContent.tabs | length')"
+if [[ "$MOK" == "true" ]]; then
+  ok "run_macro（READ・読み取りstep）: ok=true・末尾list_tabs=${MTABS}枚"
+else
+  fail "run_macroの読み取りstep実行がREADで失敗"; head_ "$R"
+fi
+
+# ---- 11m''. v3: READ状態で書込みstepのマクロ実行 → stepFailedで即停止（modeガードはステップ毎） ----
+R="$(req "{\"jsonrpc\":\"2.0\",\"id\":26,\"method\":\"tools/call\",\"params\":{\"name\":\"run_macro\",\"arguments\":{\"name\":\"field-guard\",\"dryRun\":false,\"steps\":[{\"call\":\"open_tab\",\"tab\":\"t1\",\"args\":{\"url\":\"$FT_URL\"}}]}}}")"
+_JQX_FALLBACK=''
+GSTOP="$(j "$R" -r '.result.structuredContent.stoppedReason // empty')"
+GERR="$(j "$R" -r '.result.structuredContent.steps[0].error // empty')"
+if [[ "$GSTOP" == "stepFailed" && "$GERR" == *"WRITE"* ]]; then
+  ok "READ時のマクロ書込みstepはstepFailed停止: ${GERR:0:60}…"
+else
+  fail "READ時のマクロ書込みstepが弾かれていない（stoppedReason=$GSTOP）"; head_ "$R"
 fi
 
 # ---- 12. v2: WRITE区間（対話: ここで1回クリックして追加で書込み状態へ） ----
@@ -291,6 +324,21 @@ if [[ "$LOADED" == "1" ]]; then
   fi
 fi
 
+# 12h'. v3: run_macro（WRITE・dryRun:false）: open_tab→close_tab のラベル往復を実行
+#   ※ マクロ内にopen_tab直後のpage_scrollを入れない理由: tabs.create直後は遷移コミット前
+#      （about:blank）なので固定リミッタに確実に弾かれる。マクロに待ちステップはないため、
+#      実機観察はコミット状態に依存しない open→close 往復で取る（page直書きは単体工具で既に観察済み）。
+R="$(req "{\"jsonrpc\":\"2.0\",\"id\":27,\"method\":\"tools/call\",\"params\":{\"name\":\"run_macro\",\"arguments\":{\"name\":\"field-macro\",\"dryRun\":false,\"steps\":[{\"call\":\"open_tab\",\"tab\":\"ft\",\"args\":{\"url\":\"$FT_URL\",\"active\":false}},{\"call\":\"close_tab\",\"tab\":\"ft\",\"args\":{}}]}}}")"
+_JQX_FALLBACK=''
+WOK="$(j "$R" '.result.structuredContent.ok')"
+WSTEPS="$(j "$R" '.result.structuredContent.steps | length')"
+WTABS="$(j "$R" '.result.structuredContent.tabs | length')"
+if [[ "$WOK" == "true" && "$WSTEPS" == "2" ]]; then
+  ok "run_macro（WRITE実行）: open_tab→close_tab往復 ok=true（steps=2・末尾list_tabs=${WTABS}枚）"
+else
+  fail "run_macroのWRITE実行が失敗（ok=$WOK steps=$WSTEPS）"; head_ "$R"
+fi
+
 # 12i. close_tab: 自開タブを閉じて原状復帰
 if [[ -n "$SELF_ID" && "$SELF_ID" != "null" ]]; then
   R="$(req "{\"jsonrpc\":\"2.0\",\"id\":23,\"method\":\"tools/call\",\"params\":{\"name\":\"close_tab\",\"arguments\":{\"tabId\":$SELF_ID}}}")"
@@ -305,6 +353,15 @@ if [[ -f "$AUDIT" ]]; then
     ok "監査にwrite:1あり（直近の書込み: $(grep '"write":1' "$AUDIT" | tail -1 | head -c 160)…）"
   else
     fail "監査にwrite:1が無い"
+  fi
+  # 12j'. v3: run_macro受付1行（家規5: 名前・ステップ数・dryRunのみ。steps本文は書かない）
+  if grep -q '"tool":"run_macro"' "$AUDIT"; then
+    ok "監査にrun_macro受付1行あり: $(grep '"tool":"run_macro"' "$AUDIT" | tail -1 | head -c 160)…"
+    if grep '"tool":"run_macro"' "$AUDIT" | grep -q '{"call"'; then
+      fail "監査のrun_macro行にsteps本文相当が混入している"
+    fi
+  else
+    fail "監査にrun_macro受付行が無い"
   fi
 fi
 

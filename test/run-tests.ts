@@ -70,6 +70,7 @@ const testConfig = (over: Partial<Config> = {}): Config => {
     sudoFill: false,
     sudoFillUrls: [],
     fillMaxBytes: 4096,
+    macroBudgetSec: 300,
     ...over,
   };
 };
@@ -280,11 +281,11 @@ test("audit: ローテーション 64KB超で path.1 へ（再起動を跨ぐサ
 // ============ 5. tools (FakeBackend) ============
 
 const toolDeps = (cfg: Partial<Config> = {}): ToolDeps => {
-  return { config: testConfig(cfg), audit: createAudit(join(tmp, "tools-audit.jsonl"), fixedClock), backend: createFakeBackend() };
+  return { config: testConfig(cfg), audit: createAudit(join(tmp, "tools-audit.jsonl"), fixedClock), backend: createFakeBackend(), now: () => 0 };
 };
 
-test("tools: 14ツール定義（読み取り4＋書込み10）", () => {
-  assert.equal(TOOLS.length, 14);
+test("tools: 15ツール定義（読み取り4＋書込み10＋マクロ1）", () => {
+  assert.equal(TOOLS.length, 15);
   assert.deepEqual(
     TOOLS.map((t) => t.name),
     [
@@ -292,6 +293,7 @@ test("tools: 14ツール定義（読み取り4＋書込み10）", () => {
       "open_tab", "close_tab", "activate_tab",
       "navigate_tab", "reload_tab", "go_back", "go_forward",
       "page_click", "page_fill", "page_scroll",
+      "run_macro",
     ],
   );
   for (const t of TOOLS) assert.ok(t.description.includes("信頼できない"), `${t.name}: untrusted注記が必要`);
@@ -302,7 +304,7 @@ test("tools: 14ツール定義（読み取り4＋書込み10）", () => {
 
 test("tools: read_tab wrapperで包む・監査に本文なし", async () => {
   const logPath = join(tmp, "read-audit.jsonl");
-  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend: createFakeBackend() };
+  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend: createFakeBackend(), now: () => 0 };
   const r = await callTool("read_tab", { tabId: 7 }, deps);
   const c = expectString(r.content, "content");
   assert.ok(c.startsWith('<rinka-page-content untrusted="true">'), "wrapperで包む");
@@ -353,7 +355,7 @@ test("tools v2: WRITE状態ならopen_tabなどが通る・監査にwrite:1とUR
   const logPath = join(tmp, "write-audit.jsonl");
   const backend = createFakeBackend();
   backend.mode = "write";
-  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend };
+  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend, now: () => 0 };
   const r = await callTool("open_tab", { url: "https://example.invalid/opened" }, deps);
   assert.equal(expectNumber(expectRecord(r.tab, "tab").tabId, "tab.tabId"), 99);
   assert.ok(backend.seen.includes("open:https://example.invalid/opened:true"), "backend.openTabが呼ばれる");
@@ -365,7 +367,7 @@ test("tools v2: WRITE状態ならopen_tabなどが通る・監査にwrite:1とUR
 test("tools v2: open/navigateのURLはhttp/httpsのみ・2048字上限", async () => {
   const backend = createFakeBackend();
   backend.mode = "write";
-  const deps = { config: testConfig(), audit: createAudit(join(tmp, "url-audit.jsonl"), fixedClock), backend };
+  const deps = { config: testConfig(), audit: createAudit(join(tmp, "url-audit.jsonl"), fixedClock), backend, now: () => 0 };
   await assert.rejects(callTool("open_tab", { url: "file:///etc/passwd" }, deps), /http/, "file:拒否");
   await assert.rejects(callTool("open_tab", { url: "javascript:alert(1)" }, deps), /http/, "javascript:拒否");
   await assert.rejects(callTool("open_tab", { url: "https://example.invalid/" + "a".repeat(2100) }, deps), /2048/, "長すぎ");
@@ -376,7 +378,7 @@ test("tools v2: page_fill fields検査（1〜20欄・fill1欄上限・監査に�
   const logPath = join(tmp, "fill-audit.jsonl");
   const backend = createFakeBackend();
   backend.mode = "write";
-  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend };
+  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend, now: () => 0 };
   await assert.rejects(callTool("page_fill", { tabId: 7, fields: [] }, deps), /1〜20/, "0欄拒否");
   await assert.rejects(callTool("page_fill", { tabId: 7, fields: Array.from({ length: 21 }, (_, i) => ({ selector: `#f${i}`, value: "x" })) }, deps), /1〜20/, "21欄拒否");
   await assert.rejects(
@@ -398,7 +400,7 @@ test("tools v2: page_fill fields検査（1〜20欄・fill1欄上限・監査に�
 test("tools v2: page_clickはselector/xy排他・範囲検査", async () => {
   const backend = createFakeBackend();
   backend.mode = "write";
-  const deps = { config: testConfig(), audit: createAudit(join(tmp, "click-audit.jsonl"), fixedClock), backend };
+  const deps = { config: testConfig(), audit: createAudit(join(tmp, "click-audit.jsonl"), fixedClock), backend, now: () => 0 };
   await assert.rejects(callTool("page_click", { tabId: 7 }, deps), /どちらか一方/, "両方無し拒否");
   await assert.rejects(callTool("page_click", { tabId: 7, selector: "a", x: 1, y: 1 }, deps), /どちらか一方/, "両方指定拒否");
   await assert.rejects(callTool("page_click", { tabId: 7, x: -1, y: 5 }, deps), /0〜20000/, "負座標拒否");
@@ -409,7 +411,7 @@ test("tools v2: page_clickはselector/xy排他・範囲検査", async () => {
 test("tools v2: page_scroll方向・量検査", async () => {
   const backend = createFakeBackend();
   backend.mode = "write";
-  const deps = { config: testConfig(), audit: createAudit(join(tmp, "scroll-audit.jsonl"), fixedClock), backend };
+  const deps = { config: testConfig(), audit: createAudit(join(tmp, "scroll-audit.jsonl"), fixedClock), backend, now: () => 0 };
   await assert.rejects(callTool("page_scroll", { tabId: 7, direction: "sideways" }, deps), /up.*down/, "方向検査");
   await assert.rejects(callTool("page_scroll", { tabId: 7, direction: "down", amount: 99999 }, deps), /1〜10000/, "量上限");
   const r = await callTool("page_scroll", { tabId: 7, direction: "down" }, deps);
@@ -419,7 +421,7 @@ test("tools v2: page_scroll方向・量検査", async () => {
 test("tools v2: tabId型検査（全書込み共通）", async () => {
   const backend = createFakeBackend();
   backend.mode = "write";
-  const deps = { config: testConfig(), audit: createAudit(join(tmp, "tabid-audit.jsonl"), fixedClock), backend };
+  const deps = { config: testConfig(), audit: createAudit(join(tmp, "tabid-audit.jsonl"), fixedClock), backend, now: () => 0 };
   await assert.rejects(callTool("close_tab", { tabId: " siete" }, deps), /tabId/, "文字列tabId拒否");
   await assert.rejects(callTool("reload_tab", {}, deps), /tabId/, "tabId無し拒否");
 });
@@ -473,7 +475,7 @@ test("audit v2: プリミティブ配列は通す・オブジェクト混じり�
 
 // ============ 6. mcp ============
 
-const mcpDeps: ToolDeps = { config: testConfig(), audit: createAudit(join(tmp, "mcp-audit.jsonl"), fixedClock), backend: createFakeBackend() };
+const mcpDeps: ToolDeps = { config: testConfig(), audit: createAudit(join(tmp, "mcp-audit.jsonl"), fixedClock), backend: createFakeBackend(), now: () => 0 };
 
 test("mcp: initialize protocolVersion一致", async () => {
   const r = await handleRpcMessage({ jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: SUPPORTED_PROTOCOL, capabilities: {}, clientInfo: {} } }, mcpDeps);
@@ -492,7 +494,7 @@ test("mcp: ping / tools/list", async () => {
   const l = await handleRpcMessage({ jsonrpc: "2.0", id: 3, method: "tools/list" }, mcpDeps);
   assert.ok(isRpcOk(l));
   assert.ok(l !== null);
-  assert.equal(expectArray(l.result.tools, "tools").length, 14);
+  assert.equal(expectArray(l.result.tools, "tools").length, 15);
 });
 
 test("mcp: 通知はnull（HTTP層が202）", async () => {
@@ -517,7 +519,7 @@ test("mcp: tools/call実行エラーはisError:true（プロトコルエラー�
   boom.readTab = async (): Promise<never> => {
     throw new Error("ブーム");
   };
-  const deps = { config: testConfig(), audit: createAudit(join(tmp, "boom-audit.jsonl"), fixedClock), backend: boom };
+  const deps = { config: testConfig(), audit: createAudit(join(tmp, "boom-audit.jsonl"), fixedClock), backend: boom, now: () => 0 };
   const r = await handleRpcMessage({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { name: "read_tab", arguments: { tabId: 7 } } }, deps);
   assert.ok(isRpcOk(r));
   assert.ok(r !== null);
@@ -544,7 +546,7 @@ const H = { "Content-Type": "application/json", Authorization: `Bearer ${TOKEN}`
 const PING = '{"jsonrpc":"2.0","id":1,"method":"ping"}';
 
 before(async () => {
-  srv = await startServer({ config: testConfig({ auditPath: auditPathHttp }), audit: createAudit(auditPathHttp, fixedClock), backend: createFakeBackend() });
+  srv = await startServer({ config: testConfig({ auditPath: auditPathHttp }), audit: createAudit(auditPathHttp, fixedClock), backend: createFakeBackend(), now: () => 0 });
   base = `http://127.0.0.1:${srv.port}/mcp`;
 });
 
@@ -752,4 +754,148 @@ test("xpi: 検체が壊れていればverifyStoredが弾く（fail-closed）", (
 
 test("SERVER_INFO は manifest と同じ識別子", () => {
   assert.equal(SERVER_INFO.name, "rinka");
+});
+
+// ============ 8. run_macro（v3・仕様会議第1回 2026-11-27採決） ============
+
+const macroDeps = (logName: string, backend: ReturnType<typeof createFakeBackend> = createFakeBackend(), now: () => number = () => 0): ToolDeps => {
+  return { config: testConfig(), audit: createAudit(join(tmp, logName), fixedClock), backend, now };
+};
+
+test("macro: dryRun既定trueは静的検査のみ（backend未触・受付監査1行・READでも可）", async () => {
+  const deps = macroDeps("m-dry.jsonl"); // FakeBackend.mode = "read"（modeに依らない検査であることも見る）
+  const r = await callTool("run_macro", { name: "nightly", steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "page_scroll", tab: "t1", args: { direction: "down", amount: 100 } },
+  ] }, deps);
+  assert.equal(r.dryRun, true, "dryRun既定true");
+  assert.equal(r.ok, true);
+  assert.equal(deps.backend.getMode(), "read", "READのまま");
+  const steps = expectArray(r.steps, "steps");
+  assert.equal(steps.length, 2);
+  const lines = readFileSync(join(tmp, "m-dry.jsonl"), "utf8").trim().split("\n").map((l) => expectRecord(JSON.parse(l), "監査行"));
+  assert.equal(lines.length, 1, "受付の1行のみ");
+  assert.equal(lines[0].tool, "run_macro");
+  assert.equal(expectRecord(lines[0].args, "run_macro監査args").name, "nightly");
+  assert.equal(expectRecord(lines[0].args, "run_macro監査args").dryRun, 1);
+});
+
+test("macro: dryRun:falseはラベル解決して既存経路を往復（open→scroll→close→末尾list_tabs）", async () => {
+  const backend = createFakeBackend();
+  backend.mode = "write";
+  const deps = macroDeps("m-run.jsonl", backend);
+  const r = await callTool("run_macro", { dryRun: false, steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "page_scroll", tab: "t1", args: { direction: "down", amount: 100 } },
+    { call: "close_tab", tab: "t1", args: {} },
+  ] }, deps);
+  assert.equal(r.ok, true);
+  assert.deepEqual(backend.seen, ["open:https://example.invalid/:true", "scroll:99:down:100", "close:99"], "ラベルt1はopen応答のtabId=99へ解決");
+  assert.ok(Array.isArray(expectRecord(r, "r").tabs), "末尾の自動list_tabs");
+  const lines = readFileSync(join(tmp, "m-run.jsonl"), "utf8").trim().split("\n").map((l) => expectRecord(JSON.parse(l), "監査行"));
+  assert.equal(lines.length, 5, "受付1行+ステップ3行+末尾list_tabs 1行");
+  assert.equal(lines[0].tool, "run_macro");
+  assert.equal(lines[1].tool, "open_tab");
+  assert.equal(lines[1].write, 1, "ステップ監査は既存形式");
+  assert.equal(lines[3].tool, "close_tab");
+  assert.equal(lines[4].tool, "list_tabs");
+  assert.equal(lines[4].write, undefined, "list_tabsは読み取り");
+});
+
+test("macro: READ状態で書込みstepはそのstepの既存ガードで拒否・fail_fast停止", async () => {
+  const deps = macroDeps("m-read.jsonl"); // mode: read
+  const r = await callTool("run_macro", { dryRun: false, steps: [
+    { call: "list_tabs", args: {} },
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "page_scroll", tab: "t1", args: { direction: "down" } },
+  ] }, deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.stoppedReason, "stepFailed");
+  assert.equal(r.failedStep, 1);
+  const steps = expectArray(r.steps, "steps");
+  assert.equal(steps.length, 2, "fail_fastで以後のステップは走らない");
+  assert.ok(expectString(expectRecord(steps[1], "steps[1]").error, "error").includes("WRITE"), "WRITE案内文言が伝わる");
+});
+
+test("macro: 静的検査の拒否系（上限・未知call・再帰・tabId直指定・未束縛・close済み・各ステップ引数）", async () => {
+  const deps = macroDeps("m-static.jsonl");
+  const tooMany: unknown[] = [];
+  for (let i = 0; i < 21; i += 1) tooMany.push({ call: "list_tabs", args: {} });
+  await assert.rejects(callTool("run_macro", { steps: tooMany }, deps), /1〜20/, "21件は拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "page_evaluate", args: {} }] }, deps), /既存14工具のみ/, "未知callは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "run_macro", args: { steps: [] } }] }, deps), /再帰/, "run_macro再帰は拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "read_tab", tab: "t1", args: {} }] }, deps), /未束縛/, "未束縛ラベルは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "close_tab", tab: "t1", args: {} },
+    { call: "read_tab", tab: "t1", args: {} },
+  ] }, deps), /close済み/, "close済みラベルの参照は拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "open_tab", tab: "t1", args: { url: "https://example.invalid/", tabId: 7 } }] }, deps), /tabId は指定できません/, "tabId直指定は拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "open_tab", tab: "t1", args: { url: "ftp://x.example/" } }] }, deps), /http/, "各ステップ引数は既存規則で静的検査");
+});
+
+test("macro: expectのキャリアと語彙は静的拒否", async () => {
+  const deps = macroDeps("m-expect.jsonl");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" }, expect: { text: "x" } },
+  ] }, deps), /read_tab（urlContains\/text）または page_fill/, "書込みstepのexpectは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "read_tab", tab: "t1", args: {}, expect: {} },
+  ] }, deps), /いずれかを指定/, "空expectは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "read_tab", tab: "t1", args: {}, expect: { bogus: "x" } },
+  ] }, deps), /語彙は urlContains/, "語彙外は拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "page_fill", tab: "t1", args: { fields: [{ selector: "#q", value: "rinka" }] }, expect: { urlContains: "x" } },
+  ] }, deps), /語彙は urlContains/, "キャリアと語彙の組み合わせも静かに断つ");
+});
+
+test("macro: expectの照合（text/urlContains/valueLengths・不一致はfail_fast停止）", async () => {
+  const backend = createFakeBackend();
+  backend.mode = "write";
+  const deps = macroDeps("m-expect-run.jsonl", backend);
+  const good = await callTool("run_macro", { dryRun: false, steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/a" } },
+    { call: "read_tab", tab: "t1", args: {}, expect: { text: "SECRETTEXT-MARKER", urlContains: "example.invalid" } },
+    { call: "page_fill", tab: "t1", args: { fields: [{ selector: "#q", value: "rinka" }] }, expect: { valueLengths: [5] } },
+  ] }, deps);
+  assert.equal(good.ok, true, "3ステップともexpect充足");
+  const bad = await callTool("run_macro", { dryRun: false, steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/a" } },
+    { call: "read_tab", tab: "t1", args: {}, expect: { urlContains: "example.org" } },
+    { call: "list_tabs", args: {} },
+  ] }, deps);
+  assert.equal(bad.ok, false);
+  assert.equal(bad.stoppedReason, "expectUnmet");
+  assert.equal(bad.failedStep, 1);
+  assert.equal(expectArray(bad.steps, "steps").length, 2, "不一致stepで停止し末尾list_tabsも走らない");
+});
+
+test("macro: 予算超過は打ち切って部分レポート（RINKA_MACRO_BUDGET_SECONDS）", async () => {
+  let clockCalls = 0;
+  const now = (): number => {
+    clockCalls += 1;
+    return clockCalls <= 2 ? 0 : 999999; // startedAt=0、step1は予算内、step2で超過
+  };
+  const backend = createFakeBackend();
+  backend.mode = "write";
+  const deps = { config: testConfig({ macroBudgetSec: 1 }), audit: createAudit(join(tmp, "m-budget.jsonl"), fixedClock), backend, now };
+  const r = await callTool("run_macro", { dryRun: false, steps: [
+    { call: "list_tabs", args: {} },
+    { call: "list_tabs", args: {} },
+  ] }, deps);
+  assert.equal(r.ok, false);
+  assert.equal(r.stoppedReason, "budgetExceeded");
+  assert.equal(r.failedStep, 1);
+  assert.equal(expectArray(r.steps, "steps").length, 1, "step1のみ実行済みの部分レポート");
+});
+
+test("config v3: RINKA_MACRO_BUDGET_SECONDS 既定300・範囲検査", () => {
+  assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN }, tmp).macroBudgetSec, 300, "既定300秒");
+  assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "60" }, tmp).macroBudgetSec, 60);
+  assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "0" }, tmp), /1〜86400/, "0秒は拒否");
+  assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_X: "1" }, tmp), /未知の環境変数/, "未知RINKA_*は従来通り拒否");
 });

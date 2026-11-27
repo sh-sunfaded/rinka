@@ -10,6 +10,8 @@
  *   RINKA_SUDO_FILL（password欄fill許可・既定false）、
  *   RINKA_SUDO_FILL_URLS（allowlist・カンマ区切り・空は全URL許可。境界照合はin-page）、
  *   RINKA_FILL_MAX_BYTES（fill値の1欄あたり上限・既定4096）。
+ * - v3 マクロ: RINKA_MACRO_BUDGET_SECONDS（run_macro全体の予算・既定300。
+ *   ステップ毎の15秒打ち切りと合わせ、アドオンのWRITE自動落下とは別系統のhost側上限）。
  */
 
 import { existsSync, readFileSync, statSync } from "node:fs";
@@ -31,6 +33,8 @@ export type Config = {
   sudoFillUrls: string[];
   /** page_fill 1欄あたりのvalueバイト上限。 */
   fillMaxBytes: number;
+  /** run_macro の全体予算秒（仕様会議第1回・既定300）。超過で打ち切って部分レポート。 */
+  macroBudgetSec: number;
 };
 
 const KNOWN_VARS: ReadonlySet<string> = new Set([
@@ -46,6 +50,7 @@ const KNOWN_VARS: ReadonlySet<string> = new Set([
   "RINKA_SUDO_FILL",
   "RINKA_SUDO_FILL_URLS",
   "RINKA_FILL_MAX_BYTES",
+  "RINKA_MACRO_BUDGET_SECONDS",
 ]);
 
 const LOCALHOSTS: ReadonlySet<string> = new Set(["127.0.0.1", "localhost", "::1"]);
@@ -125,7 +130,7 @@ const parseHttpUrl = (raw: string): URL | null => {
 export const validateEnvironment = (env: Record<string, string | undefined>, homeDir: string): Config => {
   for (const key of Object.keys(env)) {
     if (key.startsWith("RINKA_") && !KNOWN_VARS.has(key)) {
-      throw new Error(`rinka: 未知の環境変数です: ${key}（既知は $(RINKA_TOKEN, RINKA_TOKEN_PATH, RINKA_HOST, RINKA_PORT, RINKA_READ_MAX_BYTES, RINKA_SCREENSHOT_MAX_BYTES, RINKA_HISTORY_MAX_ROWS, RINKA_AUDIT_PATH, RINKA_WRITE_TIMEOUT_SECONDS, RINKA_SUDO_FILL, RINKA_SUDO_FILL_URLS, RINKA_FILL_MAX_BYTES)）`);
+      throw new Error(`rinka: 未知の環境変数です: ${key}（既知は $(RINKA_TOKEN, RINKA_TOKEN_PATH, RINKA_HOST, RINKA_PORT, RINKA_READ_MAX_BYTES, RINKA_SCREENSHOT_MAX_BYTES, RINKA_HISTORY_MAX_ROWS, RINKA_AUDIT_PATH, RINKA_WRITE_TIMEOUT_SECONDS, RINKA_SUDO_FILL, RINKA_SUDO_FILL_URLS, RINKA_FILL_MAX_BYTES, RINKA_MACRO_BUDGET_SECONDS)）`);
     }
   }
 
@@ -156,8 +161,9 @@ export const validateEnvironment = (env: Record<string, string | undefined>, hom
   const sudoFill = boolStrict("RINKA_SUDO_FILL", env.RINKA_SUDO_FILL);
   const sudoFillUrls = parseUrlList("RINKA_SUDO_FILL_URLS", env.RINKA_SUDO_FILL_URLS);
   const fillMaxBytes = intRange("RINKA_FILL_MAX_BYTES", env.RINKA_FILL_MAX_BYTES, 4096, 1, 65536);
+  const macroBudgetSec = intRange("RINKA_MACRO_BUDGET_SECONDS", env.RINKA_MACRO_BUDGET_SECONDS, 300, 1, 86400);
 
   const token = loadToken(env, homeDir);
 
-  return { host, port, token, readMaxBytes, screenshotMaxBytes, historyMaxRows, auditPath, writeTimeoutSec, sudoFill, sudoFillUrls, fillMaxBytes };
+  return { host, port, token, readMaxBytes, screenshotMaxBytes, historyMaxRows, auditPath, writeTimeoutSec, sudoFill, sudoFillUrls, fillMaxBytes, macroBudgetSec };
 };

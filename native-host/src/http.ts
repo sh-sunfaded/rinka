@@ -27,6 +27,8 @@ export type HttpDeps = {
   config: Config;
   audit: Audit;
   backend: Backend;
+  /** マクロ予算の経過時計（index.ts から注入）。 */
+  now: () => number;
 };
 
 const BODY_MAX = 1024 * 1024;
@@ -91,7 +93,7 @@ const readBody = (req: IncomingMessage): Promise<Buffer | null> =>
 
 export const startServer = async (deps: HttpDeps): Promise<RunningServer> => {
   const { config } = deps;
-  const toolDeps: ToolDeps = { config, audit: deps.audit, backend: deps.backend };
+  const toolDeps: ToolDeps = { config, audit: deps.audit, backend: deps.backend, now: deps.now };
 
   const server = createServer((req, res) => {
     void (async () => {

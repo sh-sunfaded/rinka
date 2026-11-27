@@ -27,6 +27,7 @@ const main = async (): Promise<void> => {
   const config = validateEnvironment(process.env, HOME);
   const wallClock = (): string => new Date().toISOString(); // 注入される実測時計（境界はこの1箇所）
   const audit = createAudit(config.auditPath, wallClock);
+  const monoClock = (): number => performance.now(); // マクロ予算用の経過時計（注入点もこの1箇所）
 
   const send = (o: Record<string, unknown>): void => {
     process.stdout.write(encodeNativeFrame(JSON.stringify(o)));
@@ -45,7 +46,7 @@ const main = async (): Promise<void> => {
     }
   });
 
-  const running = await startServer({ config, audit, backend });
+  const running = await startServer({ config, audit, backend, now: monoClock });
 
   // ==== 準備完了をアドオンに伝える ====
   send({ t: "ready", port: running.port });
