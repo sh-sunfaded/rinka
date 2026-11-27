@@ -143,6 +143,7 @@ Origin許可リスト（Vibe Workウェブ版対応）: http層はOriginが loca
 5. **READする**: ツールバーのrinkaアイコンをクリック。バッジ `ON`（琥珀）。もう1回クリックで `W`（赤）＝WRITE。
 
 6. **Vibe Workに登録**: Custom MCP Connector のURLに `http://127.0.0.1:8765/mcp`、ヘッダー `Authorization: Bearer <トークン>`。リモート（Vibe Workウェブ版）から繋ぐ場合は `tailscale funnel --bg 8765` でhttps化したURL `https://<tailnet>.ts.net/mcp` を使い、用が済んだら Funnel を閉じる（露出は使用時のみ）。
+繋がらない時は `rinka-host.sh check` で原因を1コマンドで断定できる（下記「接続が切れた時の点検」）。
 
 ## 日常運用（署名済みxpi＋sudoなし）
 
@@ -186,6 +187,27 @@ SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛
 - 検査URLが到達不能な環境では `RINKA_FT_URL` / `RINKA_FT_URL2` / `RINKA_FT_FORM_URL` で差し替えられる（既定は example.com / example.org / httpbin.org）
 - **WRITE自動落ちの確認にはFirefoxを起動し直す必要がある**（プロセスspawn時にenvが読まれるため）。`RINKA_WRITE_TIMEOUT_SECONDS=20` で起動し直すか、launcher（rinka-host.sh）側でexportしてOFF→ONトグルをやり直し、WRITEのまま20秒以上放置する。書込みがWRITE案内文言で弾かれ、直後のREADは成功すれば、READへ落下したことの確認になる
 - page_fillの検査先（httpbin.org）が不調の場合は `[info]` に格下げされる（fill機能の成否とは独立）
+
+## 接続が切れた時の点検（rinka-host.sh check）
+
+Vibe Workから繋がらなくなった時、原因を端末上で1コマンドで断定する（要 curl）:
+
+```sh
+./native-host/install/rinka-host.sh check                                # 既定 http://127.0.0.1:8765/mcp を点検
+./native-host/install/rinka-host.sh check https://<tailnet>.ts.net/mcp   # funnel経由を点検
+```
+
+正トークン＋許可Origin（`https://chat.mistral.ai`）で `ping` を撃ち、応答コードで原因が分かる:
+
+| 応答 | 断定 |
+| --- | --- |
+| `200` / `202` | host・トークン・Originは通っている → **Vibe Work側の登録**（URL・Bearer）を見直す |
+| `401` | **トークン不一致**（token再生成後にhostをspawnし直していない等） |
+| `403` | **Origin/funnel経路**（funnel URLの誤り・リスナーが現行hostでない疑い） |
+| `404` | URLが `POST /mcp` に届いていない（URL末尾を確認） |
+| 接続不能 | **host/funnel落ち**（トグルOFF・funnel閉鎖） |
+
+hostとportは `RINKA_HOST` / `RINKA_PORT` に従う（既定 `127.0.0.1:8765`）。トークンは env `RINKA_TOKEN` > `RINKA_TOKEN_PATH` のファイルの順で読む（文言に表示しない）。
 
 ## 開発
 
