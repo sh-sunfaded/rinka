@@ -17,7 +17,7 @@ import type { ToolDeps } from "./tools.ts";
 import { isRecord } from "./types.ts";
 
 export const SUPPORTED_PROTOCOL = "2025-06-18";
-export const SERVER_INFO = { name: "rinka", version: "0.3.0" }; // v3: run_macro 追加（tools/list 15本）
+export const SERVER_INFO = { name: "rinka", version: "0.4.0" }; // v4: select_options 追加（tools/list 16本）
 
 export type RpcOk = { jsonrpc: "2.0"; id: unknown; result: Record<string, unknown> };
 export type RpcErr = { jsonrpc: "2.0"; id: unknown; error: { code: number; message: string } };

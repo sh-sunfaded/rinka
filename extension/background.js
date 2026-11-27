@@ -227,7 +227,48 @@ function scrollFunc(direction, amount) {
   }
 }
 
-// ---- cmdハンドラ（READ系4 + WRITE系10） ----
+// select選択肢の列挙。上限: 8select・各50option・各文字列60字（超分は「…」付きで切る。
+// valueを切ったものはpage_fillのselect事前検査に通り得ないため、長い値は元のselectを絞って使う運用）
+function selectsFunc(selector) {
+  var MAX_SELECTS = 8;
+  var MAX_OPTIONS = 50;
+  var MAX_STR = 60;
+  function cut(v) {
+    var s = v === null || v === undefined ? "" : String(v);
+    return s.length > MAX_STR ? s.slice(0, MAX_STR) + "…" : s;
+  }
+  try {
+    var hits = Array.from(document.querySelectorAll(selector));
+    var selects = hits.filter(function (el) { return el.tagName && el.tagName.toLowerCase() === "select"; });
+    if (selects.length === 0) {
+      return {
+        ok: false,
+        error:
+          "selects: セレクタに一致するselect要素がありません: " + selector +
+          (hits.length > 0 ? "（一致" + hits.length + "要素のうちselectは0。" : "（一致0要素。") +
+          "selectを含むセレクタを指定してください）",
+      };
+    }
+    var out = selects.slice(0, MAX_SELECTS).map(function (el, i) {
+      var opts = Array.from(el.options || []);
+      return {
+        index: i,
+        id: cut(el.id || ""),
+        name: cut(el.name || ""),
+        multiple: el.multiple === true,
+        optionCount: opts.length,
+        options: opts.slice(0, MAX_OPTIONS).map(function (o) {
+          return { value: cut(o.value ?? ""), text: cut(o.text ?? ""), selected: o.selected === true };
+        }),
+      };
+    });
+    return { ok: true, selects: out };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+// ---- cmdハンドラ（READ系5 + WRITE系10） ----
 
 async function handleReq(m) {
   const { cmd, args } = m;
@@ -286,6 +327,11 @@ async function handleReq(m) {
     }));
     rows.sort((a, b) => (b.lastVisit ?? "").localeCompare(a.lastVisit ?? ""));
     return { rows };
+  }
+  if (cmd === "selects/list") {
+    const tab = await browser.tabs.get(args.tabId);
+    const r = await runInPage(args.tabId, selectsFunc, [args.selector]);
+    return { tab: tabInfo(tab), selects: r.selects };
   }
 
   // ---- WRITE系（一次modeガード＋対象ガード＋固定リミッタ） ----

@@ -24,6 +24,23 @@ export type HistoryRow = {
   lastVisit: string; // ISO 8601（無ければ null）
 };
 
+/** select_options の選択肢1件（in-pageで上限適用済み。valueはpage_fillにそのまま渡せる）。 */
+export type SelectOption = {
+  value: string;
+  text: string;
+  selected: boolean;
+};
+
+/** select_options の1要素。optionCountは上限適用前の実数（optionsは頭から50件まで）。 */
+export type SelectInfo = {
+  index: number;
+  id: string;
+  name: string;
+  multiple: boolean;
+  optionCount: number;
+  options: SelectOption[];
+};
+
 export type BackendMode = "read" | "write";
 
 /** page_fill の入力欄（1..20）。valueの監査記録は長さのみ（家規5）。 */
@@ -46,6 +63,8 @@ export type Backend = {
   screenshot: (tabId: number) => Promise<{ tab: TabInfo; base64: string }>;
   /** 履歴検索（browser.history API 経由のみ・新しい順）。 */
   searchHistory: (query: string, limit: number) => Promise<HistoryRow[]>;
+  /** 指定タブ内のセレクタに一致するselect要素の選択肢一覧（in-page上限適用済み・v4）。 */
+  selectOptions: (tabId: number, selector: string) => Promise<{ tab: TabInfo; selects: SelectInfo[] }>;
 
   // ---- v2 書込み（ここから下は WRITE 状態のみ。mode追跡は {t:"mode"} フレーム） ----
   /** 現在のmode。初期値read。addonからの {t:"mode"} 通知で変わる。 */
@@ -95,6 +114,21 @@ export const isHistoryRow = (v: unknown): v is HistoryRow =>
 /** fill応答の1欄。値そのものは応響にも乗らない（selectorと長さのみ）。 */
 export const isFillFieldResult = (v: unknown): v is FillFieldResult =>
   isRecord(v) && typeof v.selector === "string" && typeof v.valueLength === "number";
+
+/** select一覧の選択肢1件。 */
+export const isSelectOption = (v: unknown): v is SelectOption =>
+  isRecord(v) && typeof v.value === "string" && typeof v.text === "string" && typeof v.selected === "boolean";
+
+/** select一覧の1要素（optionsの中身まで検査。不正はfail-closed）。 */
+export const isSelectInfo = (v: unknown): v is SelectInfo =>
+  isRecord(v) &&
+  typeof v.index === "number" &&
+  typeof v.id === "string" &&
+  typeof v.name === "string" &&
+  typeof v.multiple === "boolean" &&
+  typeof v.optionCount === "number" &&
+  Array.isArray(v.options) &&
+  v.options.every(isSelectOption);
 
 // ---- v3 マクロ（run_macro・仕様会議第1回 2026-11-27採決） ----
 

@@ -11,7 +11,7 @@
 #   RINKA_FT_FORM_URL 既定 https://httpbin.org/forms/post  page_fill用（[name=custname]/[name=custtel]があること）
 #   FT_WAIT           既定 15  読込コミット待ちの上限秒
 #
-# 見る点: initialize / tools/list(15) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
+# 見る点: initialize / tools/list(16) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
 #         read_tab wrapper / search_history / event page持続 / READ時書込み拒否 /
 #         v3マクロ（READ静的検査dryRun・READ読み取り実行・READ書込みstep停止・WRITE open→close往復・監査受付1行）/
 #         WRITE書込み10本往復（open→click→back→forward→navigate→reload→scroll→fill→close）/
@@ -79,7 +79,7 @@ NAME="$(j "$R" -r '.result.serverInfo.name // empty')"
 R="$(req '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
 _JQX_FALLBACK=0
 N="$(j "$R" '.result.tools | length')"
-[[ "$N" == "15" ]] && ok "tools/list: 15ツール（読み取り4＋書込み10＋マクロ1）" || { fail "tools/listが15ツールでない($N)"; head_ "$R"; }
+[[ "$N" == "16" ]] && ok "tools/list: 16ツール（読み取り5＋書込み10＋マクロ1）" || { fail "tools/listが16ツールでない($N)"; head_ "$R"; }
 
 # ---- 3. list_tabs（活性と非活性のIDを採る） ----
 R="$(req '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}')"
@@ -142,6 +142,18 @@ _JQX_FALLBACK=-1
 ROWS="$(j "$R" '.result.structuredContent.rows | length')"
 [[ "${ROWS:-0}" -gt 0 ]] && ok "search_history('github'): rows=${ROWS}" \
                        || echo "  [info] search_history rows=${ROWS}（'github'が履歴に無いだけの可能性）"
+
+# ---- 8b. select_options: 一致なし文言の陰性probe（実機にselect#rinka-ft-absentは存在しない決定的検査） ----
+if [[ -n "$ACTIVE_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":16,\"method\":\"tools/call\",\"params\":{\"name\":\"select_options\",\"arguments\":{\"tabId\":$ACTIVE_ID,\"selector\":\"select#rinka-ft-absent\"}}}")"
+  _JQX_FALLBACK=''
+  ERR="$(j "$R" -r '.result.isError // empty')"
+  if [[ "$ERR" == "true" ]] && grep -q "select要素がありません" <<<"$R"; then
+    ok "select_options(一致なし): isError+一致なし文言が返る"
+  else
+    fail "select_options(一致なし)の応答が想定と違う"; head_ "$R"
+  fi
+fi
 
 # ---- 9. event page持続（放置して再応答） ----
 if [[ "${SKIP_IDLE:-0}" == "1" ]]; then

@@ -87,6 +87,13 @@ const createFakeBackend = (): Backend & { mode: BackendMode; seen: string[] } =>
     readTab: async (tabId: number) => ({ tab: { tabId, url: "https://example.invalid/a", title: "例A", active: true }, text: "本文SECRETTEXT-MARKERだよ" }),
     screenshot: async (tabId: number) => ({ tab: { tabId, url: "https://example.invalid/a", title: "例A", active: true }, base64: "QUJDRA==" }),
     searchHistory: async (query: string, limit: number) => [{ url: `https://example.invalid/?q=${query}&limit=${limit}`, title: "検索", visitCount: 3, lastVisit: "2026-11-20T00:00:00.000Z" }],
+    selectOptions: async (tabId: number, selector: string) => ({
+      tab: { tabId, url: "https://example.invalid/a", title: "例A", active: true },
+      selects: [{ index: 0, id: "pref", name: `sel:${selector}`, multiple: false, optionCount: 2, options: [
+        { value: "a", text: "A択 SECRETOPT-MARKER", selected: true },
+        { value: "b", text: "B択", selected: false },
+      ] }],
+    }),
 
     // ---- v2 書込み（modeフィールドでtest側が制御。mode="write"のときだけ呼ばれる想定） ----
     openTab: async (url: string, active: boolean) => {
@@ -284,12 +291,12 @@ const toolDeps = (cfg: Partial<Config> = {}): ToolDeps => {
   return { config: testConfig(cfg), audit: createAudit(join(tmp, "tools-audit.jsonl"), fixedClock), backend: createFakeBackend(), now: () => 0 };
 };
 
-test("tools: 15ツール定義（読み取り4＋書込み10＋マクロ1）", () => {
-  assert.equal(TOOLS.length, 15);
+test("tools: 16ツール定義（読み取り5＋書込み10＋マクロ1）", () => {
+  assert.equal(TOOLS.length, 16);
   assert.deepEqual(
     TOOLS.map((t) => t.name),
     [
-      "list_tabs", "read_tab", "screenshot", "search_history",
+      "list_tabs", "read_tab", "screenshot", "search_history", "select_options",
       "open_tab", "close_tab", "activate_tab",
       "navigate_tab", "reload_tab", "go_back", "go_forward",
       "page_click", "page_fill", "page_scroll",
@@ -297,7 +304,7 @@ test("tools: 15ツール定義（読み取り4＋書込み10＋マクロ1）", (
     ],
   );
   for (const t of TOOLS) assert.ok(t.description.includes("信頼できない"), `${t.name}: untrusted注記が必要`);
-  for (const t of TOOLS.slice(4)) {
+  for (const t of TOOLS.slice(5)) {
     assert.ok(t.description.includes("WRITE状態"), `${t.name}: WRITE制限の注記が必要`);
   }
 });
@@ -341,6 +348,47 @@ test("tools: query必須・tabId必須", async () => {
   await assert.rejects(callTool("search_history", {}, deps), "query無しは拒否");
   await assert.rejects(callTool("read_tab", {}, deps), "tabId無しは拒否");
 });
+
+// ============ 5a2. tools v4 select_options ============
+
+test("tools v4: select_options wrapperで包む・監査に選択肢文言なし", async () => {
+  const logPath = join(tmp, "selects-audit.jsonl");
+  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend: createFakeBackend(), now: () => 0 };
+  const r = await callTool("select_options", { tabId: 7, selector: "#pref" }, deps);
+  const c = expectString(r.content, "content");
+  assert.ok(c.startsWith('<rinka-page-content untrusted="true">'), "wrapperで包む");
+  assert.ok(c.includes("SECRETOPT-MARKER"), "選択肢文言が入っている");
+  assert.ok(c.endsWith("</rinka-page-content>"), "wrapperで閉じる");
+  const parsed = JSON.parse(c.replace(/<\/?rinka-page-content[^>]*>/g, "").trim());
+  const s = expectRecord(expectArray(parsed, "selects配列")[0], "selects[0]");
+  assert.equal(expectNumber(s.index, "index"), 0);
+  assert.equal(expectString(s.id, "id"), "pref");
+  assert.equal(expectNumber(s.optionCount, "optionCount"), 2);
+  const opts = expectArray(s.options, "options");
+  assert.equal(opts.length, 2);
+  assert.equal(expectString(expectRecord(opts[0], "options[0]").value, "value"), "a");
+  assert.equal(expectRecord(opts[0], "options[0]").selected, true);
+  assert.equal(expectRecord(opts[1], "options[1]").selected, false);
+  assert.ok(!readFileSync(logPath, "utf8").includes("SECRETOPT-MARKER"), "監査ログに選択肢文言を書かない");
+  assert.ok(readFileSync(logPath, "utf8").includes("select_options"), "監査に工具名");
+});
+
+test("tools v4: select_options readMaxBytes超は切らずfail-closed拒否", async () => {
+  // JSONは切ると構文壊れで救えないため、read_tabと違いtruncateしない（エラーで返す）
+  const deps = toolDeps({ readMaxBytes: 10 });
+  await assert.rejects(callTool("select_options", { tabId: 7, selector: "#pref" }, deps), /上限/, "上限超はエラー");
+});
+
+test("tools v4: select_options selector検査（1〜500字）・tabId必須・READ状態で可", async () => {
+  const deps = toolDeps(); // FakeBackend.mode = "read"
+  await assert.rejects(callTool("select_options", { tabId: 7 }, deps), /selector/, "selector無しは拒否");
+  await assert.rejects(callTool("select_options", { tabId: 7, selector: "" }, deps), /1〜500/, "空selectorは拒否");
+  await assert.rejects(callTool("select_options", { tabId: 7, selector: "a".repeat(501) }, deps), /1〜500/, "501字は拒否");
+  await assert.rejects(callTool("select_options", { selector: "#pref" }, deps), "tabId無しは拒否");
+  const r = await callTool("select_options", { tabId: 7, selector: "#pref" }, deps); // READのまま通る
+  assert.ok(expectString(r.content, "content").includes("pref"));
+});
+
 
 // ============ 5b. tools v2 書込み（mode・対象・固定リミッタ・監査） ============
 
@@ -494,7 +542,7 @@ test("mcp: ping / tools/list", async () => {
   const l = await handleRpcMessage({ jsonrpc: "2.0", id: 3, method: "tools/list" }, mcpDeps);
   assert.ok(isRpcOk(l));
   assert.ok(l !== null);
-  assert.equal(expectArray(l.result.tools, "tools").length, 15);
+  assert.equal(expectArray(l.result.tools, "tools").length, 16);
 });
 
 test("mcp: 通知はnull（HTTP層が202）", async () => {
@@ -742,7 +790,7 @@ test("xpi: build→central directory解釈→stored実byte一致（往復）", (
   verifyStored(xpi2, [{ name: "big.bin", data: big }]);
 });
 
-test("xpi: 検체が壊れていればverifyStoredが弾く（fail-closed）", () => {
+test("xpi: 検体が壊れていればverifyStoredが弾く（fail-closed）", () => {
   const entries = [{ name: "a.txt", data: Buffer.from("hello", "utf8") }];
   const xpi = buildXpi(entries);
   const broken = Buffer.from(xpi); // 複製してデータ部1byteを壊す（dataStart は central directory から実測）
@@ -802,6 +850,25 @@ test("macro: dryRun:falseはラベル解決して既存経路を往復（open→
   assert.equal(lines[4].write, undefined, "list_tabsは読み取り");
 });
 
+test("macro: select_optionsは読み取りstepとして可（tabラベル必須・expectは不可）", async () => {
+  // 静的検査: tabラベルで参照・tabId直指定は拒否・expect語彙はread_tab/page_fillのみ
+  const deps = macroDeps("m-sel.jsonl");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "select_options", tab: "t1", args: { selector: "#pref" } },
+  ] }, deps), /未束縛/, "未束縛ラベルは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "select_options", tab: "t1", args: { selector: "#pref" }, expect: { text: "x" } },
+  ] }, deps), /read_tab（urlContains\/text）または page_fill/, "select_optionsのexpectは拒否");
+  // 実行: READ状態のまま読み取りstepとして通る（open_tabはWRITE必要なのでdryRunで検査のみ）
+  const r = await callTool("run_macro", { dryRun: true, steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "select_options", tab: "t1", args: { selector: "#pref" } },
+  ] }, deps);
+  assert.equal(expectRecord(r, "r").ok, true, "dryRun静的検査は通る");
+});
+
+
 test("macro: READ状態で書込みstepはそのstepの既存ガードで拒否・fail_fast停止", async () => {
   const deps = macroDeps("m-read.jsonl"); // mode: read
   const r = await callTool("run_macro", { dryRun: false, steps: [
@@ -822,7 +889,7 @@ test("macro: 静的検査の拒否系（上限・未知call・再帰・tabId直�
   const tooMany: unknown[] = [];
   for (let i = 0; i < 21; i += 1) tooMany.push({ call: "list_tabs", args: {} });
   await assert.rejects(callTool("run_macro", { steps: tooMany }, deps), /1〜20/, "21件は拒否");
-  await assert.rejects(callTool("run_macro", { steps: [{ call: "page_evaluate", args: {} }] }, deps), /既存14工具のみ/, "未知callは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "page_evaluate", args: {} }] }, deps), /既存15工具のみ/, "未知callは拒否");
   await assert.rejects(callTool("run_macro", { steps: [{ call: "run_macro", args: { steps: [] } }] }, deps), /再帰/, "run_macro再帰は拒否");
   await assert.rejects(callTool("run_macro", { steps: [{ call: "read_tab", tab: "t1", args: {} }] }, deps), /未束縛/, "未束縛ラベルは拒否");
   await assert.rejects(callTool("run_macro", { steps: [

@@ -11,8 +11,8 @@
  *   応答欄は as断言でなく形状ガード（types.ts）で絞り込み、不正ならfail-closedで落とす。
  */
 
-import { isFillFieldResult, isHistoryRow, isRecord, isTabInfo } from "./types.ts";
-import type { Backend, BackendMode, FillField, FillFieldResult, HistoryRow, TabInfo } from "./types.ts";
+import { isFillFieldResult, isHistoryRow, isRecord, isSelectInfo, isTabInfo } from "./types.ts";
+import type { Backend, BackendMode, FillField, FillFieldResult, HistoryRow, SelectInfo, TabInfo } from "./types.ts";
 
 export const BACKEND_CALL_TIMEOUT_MS = 15000;
 
@@ -116,6 +116,18 @@ export const createAddonBackend = (send: (o: Record<string, unknown>) => void): 
       const rows = raw.filter(isHistoryRow);
       if (rows.length !== raw.length) throw new Error("rinka: fail-closed（履歴行が不正です）");
       return rows;
+    },
+
+    selectOptions: async (tabId: number, selector: string): Promise<{ tab: TabInfo; selects: SelectInfo[] }> => {
+      const r = await callRecord("selects/list", { tabId, selector }, "rinka: fail-closed（select一覧を取得できません）");
+      if (!isTabInfo(r.tab)) throw new Error("rinka: fail-closed（タブ情報が不正です）");
+      const raw = r.selects;
+      if (!Array.isArray(raw)) {
+        throw new Error("rinka: fail-closed（select一覧の応答形が不正です）");
+      }
+      const selects = raw.filter(isSelectInfo);
+      if (selects.length !== raw.length) throw new Error("rinka: fail-closed（select情報が不正です）");
+      return { tab: r.tab, selects };
     },
 
     // ---- v2 書込み ----
