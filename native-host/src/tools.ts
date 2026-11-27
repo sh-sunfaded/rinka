@@ -229,7 +229,7 @@ export const TOOLS: ToolDef[] = [
       "dryRun は既定trueで静的検査のみ。実行は dryRun:false を明示してください。" +
       "失敗ステップ・expect不一致・予算超過（RINKA_MACRO_BUDGET_SECONDS・既定300秒）で即停止し部分レポートを返します（fail_fast固定）。" +
       "実行時は末尾に list_tabs の結果を同梱します（操作前スナップショット限界への整合照会）。" +
-      "expectは当該ステップの結果欄のみ照合します（urlContains/textはread_tab、valueLengthsはpage_fill。遷移系の応答は操作前スナップショットのため対象外）。" +
+      "expectは当該ステップの結果欄のみ照合します（urlContains/textはread_tab、valueLengthsはpage_fill。valueLengthsは各欄の結果valueLength＝文字数との一致比較で、監査に残る同名の欄はバイト数で別単位。遷移系の応答は操作前スナップショットのため対象外）。" +
       UNTRUSTED_NOTE,
     inputSchema: {
       type: "object",
@@ -245,7 +245,7 @@ export const TOOLS: ToolDef[] = [
               call: { type: "string", description: "実行するツール名（既存14工具のみ。run_macroは指定不可）" },
               tab: { type: "string", description: "open_tab=これから束縛する新規ラベル。その他=参照ラベル" },
               args: { type: "object", description: "ツール引数（tabIdは含めない。tabラベルで参照）" },
-              expect: { type: "object", description: "期待値（urlContains/textはread_tabのみ、valueLengthsはpage_fillのみ）" },
+              expect: { type: "object", description: "期待値（urlContains/textはread_tabのみ、valueLengthsはpage_fillのみ。単位は結果のvalueLength＝文字数。監査に残る同名欄はバイト数で別単位）" },
             },
             required: ["call", "args"],
           },

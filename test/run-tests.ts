@@ -834,6 +834,19 @@ test("macro: 静的検査の拒否系（上限・未知call・再帰・tabId直�
   await assert.rejects(callTool("run_macro", { steps: [{ call: "open_tab", tab: "t1", args: { url: "ftp://x.example/" } }] }, deps), /http/, "各ステップ引数は既存規則で静的検査");
 });
 
+test("macro: 静的検査の拒否系・続き（0件・ラベル再利用・open_tab無ラベル・ラベル形式・dryRun/name引数）", async () => {
+  const deps = macroDeps("m-static2.jsonl");
+  await assert.rejects(callTool("run_macro", { steps: [] }, deps), /1〜20/, "0件は拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+  ] }, deps), /再利用不可/, "ラベル再利用は拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "open_tab", args: { url: "https://example.invalid/" } }] }, deps), /新規ラベル/, "open_tab無ラベルは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "open_tab", tab: "1x", args: { url: "https://example.invalid/" } }] }, deps), /英字で始まる/, "ラベル形式は拒否");
+  await assert.rejects(callTool("run_macro", { dryRun: "yes", steps: [{ call: "list_tabs", args: {} }] }, deps), /true\/false/, "dryRun非boolは拒否");
+  await assert.rejects(callTool("run_macro", { name: "x".repeat(201), steps: [{ call: "list_tabs", args: {} }] }, deps), /1〜200字/, "name 201字は拒否");
+});
+
 test("macro: expectのキャリアと語彙は静的拒否", async () => {
   const deps = macroDeps("m-expect.jsonl");
   await assert.rejects(callTool("run_macro", { steps: [
