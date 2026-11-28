@@ -268,7 +268,98 @@ function selectsFunc(selector) {
   }
 }
 
-// ---- cmdハンドラ（READ系5 + WRITE系10） ----
+// 要素列挙（page_probe）。任意JSは実行せず固定欄のみ（tag/id/class/text/href/value/矩形/中心/可視性）。
+// 上限: 50要素・class上位5件・各文言60字。centerはpage_clickのx/yにそのまま渡せる整数。
+function probeFunc(selector, limit) {
+  var MAX_STR = 60;
+  function cut(v) {
+    var s = v === null || v === undefined ? "" : String(v);
+    return s.length > MAX_STR ? s.slice(0, MAX_STR) + "…" : s;
+  }
+  try {
+    var hits = Array.from(document.querySelectorAll(selector));
+    var total = hits.length;
+    if (total === 0) {
+      return { ok: false, error: "probe: セレクタに一致する要素がありません: " + selector };
+    }
+    var lim = typeof limit === "number" && Number.isInteger(limit) && limit >= 1 && limit <= 50 ? limit : 20;
+    var out = hits.slice(0, lim).map(function (el, i) {
+      var r = el.getBoundingClientRect();
+      var tag = el.tagName ? el.tagName.toLowerCase() : "";
+      var classes = Array.from(el.classList || []).slice(0, 5).map(cut);
+      var href = tag === "a" && typeof el.href === "string" ? cut(el.href) : null;
+      var value = (tag === "input" || tag === "textarea" || tag === "select") && typeof el.value === "string" ? cut(el.value) : null;
+      var visible =
+        r.width > 0 && r.height > 0 && (typeof el.checkVisibility === "function" ? el.checkVisibility() : el.offsetParent !== null);
+      return {
+        index: i,
+        tag: tag,
+        id: cut(el.id || ""),
+        classes: classes,
+        text: cut(String(el.innerText ?? "").trim()),
+        href: href,
+        value: value,
+        rect: { x: Math.round(r.x), y: Math.round(r.y), w: Math.round(r.width), h: Math.round(r.height) },
+        center: { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) },
+        visible: visible,
+      };
+    });
+    return { ok: true, total: total, elements: out };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+// 表構造の列挙（table_read）。上限: 8表・各表50行×30欄・thead上位30欄・各文言60字。
+// rowspan/colspanは平置き（詰め直さない・既知限界）。
+function tablesFunc(selector, limit) {
+  var MAX_TABLES = 8;
+  var MAX_ROWS = 50;
+  var MAX_CELLS = 30;
+  var MAX_HEADERS = 30;
+  var MAX_STR = 60;
+  function cut(v) {
+    var s = v === null || v === undefined ? "" : String(v);
+    return s.length > MAX_STR ? s.slice(0, MAX_STR) + "…" : s;
+  }
+  try {
+    var hits = Array.from(document.querySelectorAll(selector));
+    var tables = hits.filter(function (el) {
+      return el.tagName && el.tagName.toLowerCase() === "table";
+    });
+    if (tables.length === 0) {
+      return {
+        ok: false,
+        error:
+          "tables: セレクタに一致するtable要素がありません: " + selector +
+          (hits.length > 0 ? "（一致" + hits.length + "要素のうちtableは0。" : "（一致0要素。") +
+          "tableを含むセレクタを指定してください）",
+      };
+    }
+    var lim = typeof limit === "number" && Number.isInteger(limit) && limit >= 1 && limit <= MAX_TABLES ? limit : 4;
+    var out = tables.slice(0, lim).map(function (t, i) {
+      var trs = Array.from(t.querySelectorAll("tr"));
+      var headers = Array.from(t.querySelectorAll("thead th"))
+        .slice(0, MAX_HEADERS)
+        .map(function (c) {
+          return cut(String(c.innerText ?? "").trim());
+        });
+      var rows = trs.slice(0, MAX_ROWS).map(function (tr) {
+        return Array.from(tr.children)
+          .slice(0, MAX_CELLS)
+          .map(function (c) {
+            return cut(String(c.innerText ?? "").trim());
+          });
+      });
+      return { index: i, id: cut(t.id || ""), headers: headers, rows: rows, rowCount: trs.length };
+    });
+    return { ok: true, tables: out };
+  } catch (e) {
+    return { ok: false, error: e && e.message ? e.message : String(e) };
+  }
+}
+
+// ---- cmdハンドラ（READ系8 + WRITE系10） ----
 
 async function handleReq(m) {
   const { cmd, args } = m;
@@ -332,6 +423,61 @@ async function handleReq(m) {
     const tab = await browser.tabs.get(args.tabId);
     const r = await runInPage(args.tabId, selectsFunc, [args.selector]);
     return { tab: tabInfo(tab), selects: r.selects };
+  }
+  if (cmd === "probe/list") {
+    const tab = await browser.tabs.get(args.tabId);
+    const r = await runInPage(args.tabId, probeFunc, [args.selector, args.limit ?? 20]);
+    return { tab: tabInfo(tab), total: r.total, elements: r.elements };
+  }
+  if (cmd === "tables/list") {
+    const tab = await browser.tabs.get(args.tabId);
+    const r = await runInPage(args.tabId, tablesFunc, [args.selector, args.limit ?? 4]);
+    return { tab: tabInfo(tab), tables: r.tables };
+  }
+  if (cmd === "tabs/wait") {
+    // 条件待ち（urlContains/textContains の先着・500ms間隔でpoll）。host側で検査済みだが
+    // 念のため文字列でない条件は無視し、両方なしなら即タイムアウト扱いで返す（matched=nullは継続判断を呼び出し側に委ねる）
+    const urlContains = typeof args.urlContains === "string" ? args.urlContains : null;
+    const textContains = typeof args.textContains === "string" ? args.textContains : null;
+    const timeoutSec =
+      typeof args.timeoutSec === "number" && Number.isInteger(args.timeoutSec) && args.timeoutSec >= 1 && args.timeoutSec <= 10
+        ? args.timeoutSec
+        : 5;
+    const start = Date.now();
+    const deadline = start + timeoutSec * 1000;
+    if (urlContains === null && textContains === null) {
+      const tab = await browser.tabs.get(args.tabId);
+      return { tab: tabInfo(tab), matched: null, elapsedMs: 0 };
+    }
+    while (Date.now() < deadline) {
+      const tab = await browser.tabs.get(args.tabId);
+      if (urlContains !== null && (tab.url ?? "").includes(urlContains)) {
+        return { tab: tabInfo(tab), matched: "url", elapsedMs: Date.now() - start };
+      }
+      if (textContains !== null) {
+        let found = false;
+        try {
+          const results = await browser.scripting.executeScript({
+            target: { tabId: args.tabId },
+            func: (q) => (document.body ? document.body.innerText.includes(q) : false),
+            args: [textContains],
+          });
+          found = results && results[0] && results[0].result === true;
+        } catch (e) {
+          throw new Error(
+            "本文の取得が拒否されました（" +
+              msg(e) +
+              "）。about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可してください"
+          );
+        }
+        if (found) {
+          return { tab: tabInfo(tab), matched: "text", elapsedMs: Date.now() - start };
+        }
+      }
+      await new Promise((r) => setTimeout(r, 500));
+    }
+    const tab = await browser.tabs.get(args.tabId);
+    return { tab: tabInfo(tab), matched: null, elapsedMs: Date.now() - start };
   }
 
   // ---- WRITE系（一次modeガード＋対象ガード＋固定リミッタ） ----

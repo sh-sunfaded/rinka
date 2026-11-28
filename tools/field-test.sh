@@ -11,7 +11,7 @@
 #   RINKA_FT_FORM_URL 既定 https://httpbin.org/forms/post  page_fill用（[name=custname]/[name=custtel]があること）
 #   FT_WAIT           既定 15  読込コミット待ちの上限秒
 #
-# 見る点: initialize / tools/list(16) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
+# 見る点: initialize / tools/list(19) / list_tabs / 401 / screenshot（活性・非活性・サイズ）/
 #         read_tab wrapper / search_history / event page持続 / READ時書込み拒否 /
 #         v3マクロ（READ静的検査dryRun・READ読み取り実行・READ書込みstep停止・WRITE open→close往復・監査受付1行）/
 #         WRITE書込み10本往復（open→click→back→forward→navigate→reload→scroll→fill→close）/
@@ -79,7 +79,7 @@ NAME="$(j "$R" -r '.result.serverInfo.name // empty')"
 R="$(req '{"jsonrpc":"2.0","id":2,"method":"tools/list"}')"
 _JQX_FALLBACK=0
 N="$(j "$R" '.result.tools | length')"
-[[ "$N" == "16" ]] && ok "tools/list: 16ツール（読み取り5＋書込み10＋マクロ1）" || { fail "tools/listが16ツールでない($N)"; head_ "$R"; }
+[[ "$N" == "19" ]] && ok "tools/list: 19ツール（読み取り8＋書込み10＋マクロ1）" || { fail "tools/listが19ツールでない($N)"; head_ "$R"; }
 
 # ---- 3. list_tabs（活性と非活性のIDを採る） ----
 R="$(req '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"list_tabs","arguments":{}}}')"
@@ -152,6 +152,43 @@ if [[ -n "$ACTIVE_ID" ]]; then
     ok "select_options(一致なし): isError+一致なし文言が返る"
   else
     fail "select_options(一致なし)の応答が想定と違う"; head_ "$R"
+  fi
+fi
+
+# ---- 8c. page_probe: 一致なし文言の陰性probe（実機に#rinka-ft-absent-probeは存在しない決定的検査） ----
+if [[ -n "$ACTIVE_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":17,\"method\":\"tools/call\",\"params\":{\"name\":\"page_probe\",\"arguments\":{\"tabId\":$ACTIVE_ID,\"selector\":\"#rinka-ft-absent-probe\"}}}")"
+  _JQX_FALLBACK=''
+  ERR="$(j "$R" -r '.result.isError // empty')"
+  if [[ "$ERR" == "true" ]] && grep -q "要素がありません" <<<"$R"; then
+    ok "page_probe(一致なし): isError+一致なし文言が返る"
+  else
+    fail "page_probe(一致なし)の応答が想定と違う"; head_ "$R"
+  fi
+fi
+
+# ---- 8d. table_read: 一致なし文言の陰性probe（実機にtable#rinka-ft-absentは存在しない決定的検査） ----
+if [[ -n "$ACTIVE_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":18,\"method\":\"tools/call\",\"params\":{\"name\":\"table_read\",\"arguments\":{\"tabId\":$ACTIVE_ID,\"selector\":\"table#rinka-ft-absent\"}}}")"
+  _JQX_FALLBACK=''
+  ERR="$(j "$R" -r '.result.isError // empty')"
+  if [[ "$ERR" == "true" ]] && grep -q "table要素がありません" <<<"$R"; then
+    ok "table_read(一致なし): isError+一致なし文言が返る"
+  else
+    fail "table_read(一致なし)の応答が想定と違う"; head_ "$R"
+  fi
+fi
+
+# ---- 8e. wait_tab: タイムアウト陰性probe（一致しない条件でmatched=null・エラーではない） ----
+if [[ -n "$ACTIVE_ID" ]]; then
+  R="$(req "{\"jsonrpc\":\"2.0\",\"id\":19,\"method\":\"tools/call\",\"params\":{\"name\":\"wait_tab\",\"arguments\":{\"tabId\":$ACTIVE_ID,\"urlContains\":\"rinka-ft-never-match\",\"timeoutSec\":1}}}")"
+  _JQX_FALLBACK=''
+  MATCHED="$(j "$R" -r '.result.structuredContent.matched | tostring')"
+  ERR="$(j "$R" -r '.result.isError // empty')"
+  if [[ "$MATCHED" == "null" && "$ERR" != "true" ]]; then
+    ok "wait_tab(タイムアウト): matched=nullでエラーにならない"
+  else
+    fail "wait_tab(タイムアウト)の応答が想定と違う"; head_ "$R"
   fi
 fi
 

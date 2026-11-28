@@ -1,6 +1,6 @@
 # rinka（燐火）
 
-Firefox を [Vibe Work](https://vibe.mistral.ai) の Custom MCP Connector に繋ぐ橋。ツールバーアイコン1つで **OFF / READ / WRITE の3状態を循環切替**（OFF→READ→WRITE→OFF）し、AIから自分のブラウザへの読み取り・操作を状態で制御する。READ（バッジON・琥珀）の間は読み取り5ツール、WRITE（バッジW・赤）の間だけ書き込み10ツールが呼べる。書き込みは即時実行・取り消せず、WRITEは放置で自動的にREADへ落ちる。このほかに、既存15工具の呼び出し列を一括実行するマクロ `run_macro` がある（下記）。
+Firefox を [Vibe Work](https://vibe.mistral.ai) の Custom MCP Connector に繋ぐ橋。ツールバーアイコン1つで **OFF / READ / WRITE の3状態を循環切替**（OFF→READ→WRITE→OFF）し、AIから自分のブラウザへの読み取り・操作を状態で制御する。READ（バッジON・琥珀）の間は読み取り8ツール、WRITE（バッジW・赤）の間だけ書き込み10ツールが呼べる。書き込みは即時実行・取り消せず、WRITEは放置で自動的にREADへ落ちる。このほかに、既存18工具の呼び出し列を一括実行するマクロ `run_macro` がある（下記）。
 
 ## 特長
 
@@ -26,7 +26,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 - READ→WRITEはプロセスを増やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
 - ページ読み取りは innerText（依存ゼロ・SPA対応）。
 
-## ツール16本（読み取り5＋書き込み10＋マクロ1）
+## ツール19本（読み取り8＋書き込み10＋マクロ1）
 
 ### 読み取り（READ/WRITE両状態で可）
 
@@ -37,6 +37,9 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 | `screenshot` | 指定タブのPNG（base64） | 既定4MB |
 | `search_history` | 履歴キーワード検索（新しい順） | 既定20件 |
 | `select_options` | select要素の選択肢を列挙（value・表示文言・selected。page_fillに渡す値の調査用） | 8要素・各50選択肢・64KB |
+| `page_probe` | セレクタに一致する要素を列挙（tag/id/class/text/href/value/矩形/中心座標/可視性の固定欄のみ。任意JSは実行しない。page_clickのx/yや実class・hrefの調査用） | 50要素・class上位5・各文言60字・64KB |
+| `table_read` | 表（table）の構造を列挙（headers/rows/行数。rowspan/colspanは平置きの既知限界） | 8表・各50行×30欄・64KB |
+| `wait_tab` | タブが条件を満たすまで待つ（urlContains/textContainsの先着。タイムアウトはmatched=nullでエラーにしない） | 500ms間隔・既定5秒・上限10秒 |
 
 ### 書き込み（WRITE状態のみ・即時実行）
 
@@ -56,9 +59,9 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 | ツール | 内容 |
 | --- | --- |
-| `run_macro` | 既存15工具の呼び出し列をhost内で連続実行（ステップ1〜20・`dryRun` 既定true） |
+| `run_macro` | 既存18工具の呼び出し列をhost内で連続実行（ステップ1〜20・`dryRun` 既定true） |
 
-- **データであってコードでない**: ステップの `call` は既知15工具名のみ（`run_macro` 自身の再帰は静的拒否）。マクロは新しい能力を足さない（`page_evaluate` 不作成の採決は不変）
+- **データであってコードでない**: ステップの `call` は既知18工具名のみ（`run_macro` 自身の再帰は静的拒否）。マクロは新しい能力を足さない（`page_evaluate` 不作成の採決は不変）
 - **ラベル参照**: タブは `open_tab` ステップが束縛したラベル（`"tab": "t1"`）でのみ参照でき、`args` への `tabId` 直指定は受付拒否。書込み先は常にこのマクロで開いた自開タブに閉じる
 - **受付時の静的検査**: ラベルの束縛順序・期待値の語彙・各ステップ引数を、実行前に全部検査する。`dryRun` 既定trueはこの検査のみ（実行は `dryRun:false` を明示）
 - **実行は既存経路**: modeガード・対象ガード・固定リミッタ・監査はステップ毎に作動する（READ時に書込みステップへ当たると、そのステップでWRITE案内文言と共に停止）
@@ -179,7 +182,7 @@ Origin許可リスト（Vibe Workウェブ版対応）: http層はOriginが loca
 実環境の疎通・観察点を1コマンドで回す（要 curl + jq）:
 
 ```sh
-bash tools/field-test.sh              # initialize → 15ツール → 401 → 撮影 → 30秒放置 → 監査
+bash tools/field-test.sh              # initialize → 19ツール → 401 → 撮影 → 30秒放置 → 監査
                                        # → READ時書込み拒否 → 対話: WRITEへ → 書込み10本往復
                                        # ＋対象ガード → OFF確認
 SKIP_IDLE=1 bash tools/field-test.sh   # 30秒放置（event page観察）を飛ばす

@@ -94,6 +94,20 @@ const createFakeBackend = (): Backend & { mode: BackendMode; seen: string[] } =>
         { value: "b", text: "B択", selected: false },
       ] }],
     }),
+    pageProbe: async (tabId: number, selector: string, limit: number) => ({
+      tab: { tabId, url: "https://example.invalid/a", title: "例A", active: true },
+      total: 3,
+      elements: [{ index: 0, tag: "a", id: `probe:${selector}`, classes: ["btn", "primary"], text: "要素SECRETPROBE-MARKER", href: "https://example.invalid/link", value: null, rect: { x: 1, y: 2, w: 30, h: 40 }, center: { x: 16, y: 22 }, visible: true }, { index: 1, tag: "input", id: "", classes: [], text: "", href: null, value: " SECRETVALUE-MARKER", rect: { x: 0, y: 0, w: 10, h: 10 }, center: { x: 5, y: 5 }, visible: true }].slice(0, limit >= 1 ? limit : 20),
+    }),
+    tableRead: async (tabId: number, selector: string, limit: number) => ({
+      tab: { tabId, url: "https://example.invalid/a", title: "例A", active: true },
+      tables: [{ index: 0, id: `table:${selector}`, headers: ["列A", "列B"], rows: [["1", "2"], ["SECRETTABLE-MARKER", "4"]], rowCount: 2 }].slice(0, limit >= 1 ? limit : 4),
+    }),
+    waitTab: async (tabId: number, urlContains: string | null, textContains: string | null, timeoutSec: number) => ({
+      tab: { tabId, url: "https://example.invalid/a", title: "例A", active: true },
+      matched: urlContains !== null ? "url" : textContains !== null ? "text" : null,
+      elapsedMs: 42 + timeoutSec,
+    }),
 
     // ---- v2 書込み（modeフィールドでtest側が制御。mode="write"のときだけ呼ばれる想定） ----
     openTab: async (url: string, active: boolean) => {
@@ -291,12 +305,13 @@ const toolDeps = (cfg: Partial<Config> = {}): ToolDeps => {
   return { config: testConfig(cfg), audit: createAudit(join(tmp, "tools-audit.jsonl"), fixedClock), backend: createFakeBackend(), now: () => 0 };
 };
 
-test("tools: 16ツール定義（読み取り5＋書込み10＋マクロ1）", () => {
-  assert.equal(TOOLS.length, 16);
+test("tools: 19ツール定義（読み取り8＋書込み10＋マクロ1）", () => {
+  assert.equal(TOOLS.length, 19);
   assert.deepEqual(
     TOOLS.map((t) => t.name),
     [
       "list_tabs", "read_tab", "screenshot", "search_history", "select_options",
+      "page_probe", "table_read", "wait_tab",
       "open_tab", "close_tab", "activate_tab",
       "navigate_tab", "reload_tab", "go_back", "go_forward",
       "page_click", "page_fill", "page_scroll",
@@ -304,7 +319,7 @@ test("tools: 16ツール定義（読み取り5＋書込み10＋マクロ1）", (
     ],
   );
   for (const t of TOOLS) assert.ok(t.description.includes("信頼できない"), `${t.name}: untrusted注記が必要`);
-  for (const t of TOOLS.slice(5)) {
+  for (const t of TOOLS.slice(8)) {
     assert.ok(t.description.includes("WRITE状態"), `${t.name}: WRITE制限の注記が必要`);
   }
 });
@@ -387,6 +402,86 @@ test("tools v4: select_options selector検査（1〜500字）・tabId必須・RE
   await assert.rejects(callTool("select_options", { selector: "#pref" }, deps), "tabId無しは拒否");
   const r = await callTool("select_options", { tabId: 7, selector: "#pref" }, deps); // READのまま通る
   assert.ok(expectString(r.content, "content").includes("pref"));
+});
+
+// ============ 5a3. tools v4大型 page_probe / table_read / wait_tab ============
+
+test("tools v4: page_probe wrapperで包む・total・監査に文言なし", async () => {
+  const logPath = join(tmp, "probe-audit.jsonl");
+  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend: createFakeBackend(), now: () => 0 };
+  const r = await callTool("page_probe", { tabId: 7, selector: "#btn", limit: 2 }, deps);
+  const c = expectString(r.content, "content");
+  assert.ok(c.startsWith('<rinka-page-content untrusted="true">'), "wrapperで包む");
+  assert.ok(c.includes("SECRETPROBE-MARKER"), "要素文言が入っている");
+  const parsed = expectRecord(JSON.parse(c.replace(/<\/?rinka-page-content[^>]*>/g, "").trim()), "probe JSON");
+  assert.equal(expectNumber(parsed.total, "total"), 3, "totalは上限前の一致数");
+  const elements = expectArray(parsed.elements, "elements");
+  assert.equal(elements.length, 2, "limitで切る");
+  const e0 = expectRecord(elements[0], "elements[0]");
+  assert.equal(expectString(e0.tag, "tag"), "a");
+  assert.ok(expectString(e0.href, "href").includes("example.invalid"), "href直読");
+  const c0 = expectRecord(e0.center, "center");
+  assert.equal(expectNumber(c0.x, "center.x"), 16, "中心座標はpage_clickに渡せる整数");
+  const log = readFileSync(logPath, "utf8");
+  assert.ok(!log.includes("SECRETPROBE-MARKER") && !log.includes("SECRETVALUE-MARKER"), "監査ログに文言なし");
+  assert.ok(log.includes("page_probe"), "監査に工具名");
+});
+
+test("tools v4: page_probe 引数検査・READ状態で可・上限超は切らずfail-closed拒否", async () => {
+  const deps = toolDeps();
+  await assert.rejects(callTool("page_probe", { tabId: 7 }, deps), /selector/, "selector無しは拒否");
+  await assert.rejects(callTool("page_probe", { tabId: 7, selector: "a".repeat(501) }, deps), /1〜500/, "501字は拒否");
+  await assert.rejects(callTool("page_probe", { tabId: 7, selector: "#b", limit: 51 }, deps), /1〜50/, "limit 51は拒否");
+  await assert.rejects(callTool("page_probe", { tabId: 7, selector: "#b", limit: 0 }, deps), /1〜50/, "limit 0は拒否");
+  await assert.rejects(callTool("page_probe", { selector: "#b" }, deps), "tabId無しは拒否");
+  const r = await callTool("page_probe", { tabId: 7, selector: "#b" }, deps); // 既定limit・READのまま通る
+  assert.ok(expectString(r.content, "content").includes("probe:#b"), "既定limit=20");
+  await assert.rejects(callTool("page_probe", { tabId: 7, selector: "#b" }, toolDeps({ readMaxBytes: 10 })), /要素一覧が上限/, "上限超はエラー");
+});
+
+test("tools v4: table_read wrapperで包む・rowCount・監査に文言なし", async () => {
+  const logPath = join(tmp, "tables-audit.jsonl");
+  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend: createFakeBackend(), now: () => 0 };
+  const r = await callTool("table_read", { tabId: 7, selector: "table" }, deps);
+  const c = expectString(r.content, "content");
+  assert.ok(c.startsWith('<rinka-page-content untrusted="true">'), "wrapperで包む");
+  assert.ok(c.includes("SECRETTABLE-MARKER"), "表文言が入っている");
+  const parsed = expectArray(JSON.parse(c.replace(/<\/?rinka-page-content[^>]*>/g, "").trim()), "tables配列");
+  const t0 = expectRecord(parsed[0], "tables[0]");
+  assert.deepEqual(expectArray(t0.headers, "headers"), ["列A", "列B"], "headers");
+  assert.equal(expectNumber(t0.rowCount, "rowCount"), 2, "rowCountは上限前の実数");
+  assert.equal(expectArray(t0.rows, "rows").length, 2, "rows");
+  const log = readFileSync(logPath, "utf8");
+  assert.ok(!log.includes("SECRETTABLE-MARKER"), "監査ログに文言なし");
+  assert.ok(log.includes("table_read"), "監査に工具名");
+  await assert.rejects(callTool("table_read", { tabId: 7, selector: "table" }, toolDeps({ readMaxBytes: 10 })), /表一覧が上限/, "上限超はエラー");
+});
+
+test("tools v4: table_read 引数検査・READ状態で可", async () => {
+  const deps = toolDeps();
+  await assert.rejects(callTool("table_read", { tabId: 7 }, deps), /selector/, "selector無しは拒否");
+  await assert.rejects(callTool("table_read", { tabId: 7, selector: "table", limit: 9 }, deps), /1〜8/, "limit 9は拒否");
+  const r = await callTool("table_read", { tabId: 7, selector: "#t" }, deps); // READのまま通る
+  assert.ok(expectString(r.content, "content").includes("table:#t"), "既定limit=4");
+});
+
+test("tools v4: wait_tab 条件必須・timeoutSec検査・応答構造・監査", async () => {
+  const logPath = join(tmp, "wait-audit.jsonl");
+  const deps = { config: testConfig(), audit: createAudit(logPath, fixedClock), backend: createFakeBackend(), now: () => 0 };
+  await assert.rejects(callTool("wait_tab", { tabId: 7 }, deps), /どちらかは必須/, "条件なしは拒否");
+  await assert.rejects(callTool("wait_tab", { tabId: 7, urlContains: "" }, deps), /1〜2000/, "空urlContainsは拒否");
+  await assert.rejects(callTool("wait_tab", { tabId: 7, textContains: "x".repeat(2001) }, deps), /1〜2000/, "2001字は拒否");
+  await assert.rejects(callTool("wait_tab", { tabId: 7, urlContains: "x", timeoutSec: 11 }, deps), /1〜10/, "timeoutSec 11は拒否");
+  await assert.rejects(callTool("wait_tab", { urlContains: "x" }, deps), "tabId無しは拒否");
+  const r = await callTool("wait_tab", { tabId: 7, urlContains: "invalid", timeoutSec: 3 }, deps);
+  assert.equal(expectString(r.matched, "matched"), "url", "url条件に一致");
+  assert.equal(expectNumber(r.elapsedMs, "elapsedMs"), 45, "elapsedMsはfake応答の42+timeoutSec");
+  assert.equal(r.content, undefined, "wait_tabはcontentでなく構造で返す");
+  const r2 = await callTool("wait_tab", { tabId: 7, textContains: "例" }, deps);
+  assert.equal(expectString(r2.matched, "matched"), "text", "text条件に一致");
+  const log = readFileSync(logPath, "utf8");
+  assert.ok(log.includes("wait_tab"), "監査に工具名");
+  assert.ok(!log.includes("SECRET"), "監査にページ文言なし");
 });
 
 
@@ -542,7 +637,7 @@ test("mcp: ping / tools/list", async () => {
   const l = await handleRpcMessage({ jsonrpc: "2.0", id: 3, method: "tools/list" }, mcpDeps);
   assert.ok(isRpcOk(l));
   assert.ok(l !== null);
-  assert.equal(expectArray(l.result.tools, "tools").length, 16);
+  assert.equal(expectArray(l.result.tools, "tools").length, 19);
 });
 
 test("mcp: 通知はnull（HTTP層が202）", async () => {
@@ -868,6 +963,28 @@ test("macro: select_optionsは読み取りstepとして可（tabラベル必須�
   assert.equal(expectRecord(r, "r").ok, true, "dryRun静的検査は通る");
 });
 
+test("macro: page_probe/table_read/wait_tabは読み取りstepとして可（tabラベル必須・expectは不可）", async () => {
+  const deps = macroDeps("m-v4.jsonl");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "page_probe", tab: "t1", args: { selector: "#b" } },
+  ] }, deps), /未束縛/, "未束縛ラベルは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "wait_tab", tab: "t1", args: { urlContains: "x" }, expect: { text: "x" } },
+  ] }, deps), /read_tab（urlContains\/text）または page_fill/, "wait_tabのexpectは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "page_probe", tab: "t1", args: { tabId: 7, selector: "#b" } },
+  ] }, deps), /tabId は指定できません/, "tabId直指定は拒否");
+  // 実行: READ状態のまま読み取りstepとして通る（open_tabはWRITE必要なのでdryRunで検査のみ）
+  const r = await callTool("run_macro", { dryRun: true, steps: [
+    { call: "open_tab", tab: "t1", args: { url: "https://example.invalid/" } },
+    { call: "page_probe", tab: "t1", args: { selector: "#b", limit: 5 } },
+    { call: "table_read", tab: "t1", args: { selector: "table", limit: 2 } },
+    { call: "wait_tab", tab: "t1", args: { urlContains: "invalid" } },
+  ] }, deps);
+  assert.equal(expectRecord(r, "r").ok, true, "dryRun静的検査は通る");
+});
 
 test("macro: READ状態で書込みstepはそのstepの既存ガードで拒否・fail_fast停止", async () => {
   const deps = macroDeps("m-read.jsonl"); // mode: read
@@ -889,7 +1006,7 @@ test("macro: 静的検査の拒否系（上限・未知call・再帰・tabId直�
   const tooMany: unknown[] = [];
   for (let i = 0; i < 21; i += 1) tooMany.push({ call: "list_tabs", args: {} });
   await assert.rejects(callTool("run_macro", { steps: tooMany }, deps), /1〜20/, "21件は拒否");
-  await assert.rejects(callTool("run_macro", { steps: [{ call: "page_evaluate", args: {} }] }, deps), /既存15工具のみ/, "未知callは拒否");
+  await assert.rejects(callTool("run_macro", { steps: [{ call: "page_evaluate", args: {} }] }, deps), /既存18工具のみ/, "未知callは拒否");
   await assert.rejects(callTool("run_macro", { steps: [{ call: "run_macro", args: { steps: [] } }] }, deps), /再帰/, "run_macro再帰は拒否");
   await assert.rejects(callTool("run_macro", { steps: [{ call: "read_tab", tab: "t1", args: {} }] }, deps), /未束縛/, "未束縛ラベルは拒否");
   await assert.rejects(callTool("run_macro", { steps: [
@@ -975,7 +1092,3 @@ test("macro: 予算超過は打ち切って部分レポート（RINKA_MACRO_BUDG
 
 test("config v3: RINKA_MACRO_BUDGET_SECONDS 既定300・範囲検査", () => {
   assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN }, tmp).macroBudgetSec, 300, "既定300秒");
-  assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "60" }, tmp).macroBudgetSec, 60);
-  assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "0" }, tmp), /1〜86400/, "0秒は拒否");
-  assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_X: "1" }, tmp), /未知の環境変数/, "未知RINKA_*は従来通り拒否");
-});

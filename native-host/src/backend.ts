@@ -11,8 +11,8 @@
  *   応答欄は as断言でなく形状ガード（types.ts）で絞り込み、不正ならfail-closedで落とす。
  */
 
-import { isFillFieldResult, isHistoryRow, isRecord, isSelectInfo, isTabInfo } from "./types.ts";
-import type { Backend, BackendMode, FillField, FillFieldResult, HistoryRow, SelectInfo, TabInfo } from "./types.ts";
+import { isFillFieldResult, isHistoryRow, isProbeElement, isRecord, isSelectInfo, isTabInfo, isTableInfo } from "./types.ts";
+import type { Backend, BackendMode, FillField, FillFieldResult, HistoryRow, ProbeElement, SelectInfo, TabInfo, TableInfo } from "./types.ts";
 
 export const BACKEND_CALL_TIMEOUT_MS = 15000;
 
@@ -128,6 +128,38 @@ export const createAddonBackend = (send: (o: Record<string, unknown>) => void): 
       const selects = raw.filter(isSelectInfo);
       if (selects.length !== raw.length) throw new Error("rinka: fail-closed（select情報が不正です）");
       return { tab: r.tab, selects };
+    },
+
+    pageProbe: async (tabId: number, selector: string, limit: number): Promise<{ tab: TabInfo; total: number; elements: ProbeElement[] }> => {
+      const r = await callRecord("probe/list", { tabId, selector, limit }, "rinka: fail-closed（要素一覧を取得できません）");
+      if (!isTabInfo(r.tab)) throw new Error("rinka: fail-closed（タブ情報が不正です）");
+      if (typeof r.total !== "number") throw new Error("rinka: fail-closed（要素一覧の応答形が不正です）");
+      const raw = r.elements;
+      if (!Array.isArray(raw)) throw new Error("rinka: fail-closed（要素一覧の応答形が不正です）");
+      const elements = raw.filter(isProbeElement);
+      if (elements.length !== raw.length) throw new Error("rinka: fail-closed（要素情報が不正です）");
+      return { tab: r.tab, total: r.total, elements };
+    },
+
+    tableRead: async (tabId: number, selector: string, limit: number): Promise<{ tab: TabInfo; tables: TableInfo[] }> => {
+      const r = await callRecord("tables/list", { tabId, selector, limit }, "rinka: fail-closed（表一覧を取得できません）");
+      if (!isTabInfo(r.tab)) throw new Error("rinka: fail-closed（タブ情報が不正です）");
+      const raw = r.tables;
+      if (!Array.isArray(raw)) throw new Error("rinka: fail-closed（表一覧の応答形が不正です）");
+      const tables = raw.filter(isTableInfo);
+      if (tables.length !== raw.length) throw new Error("rinka: fail-closed（表情報が不正です）");
+      return { tab: r.tab, tables };
+    },
+
+    waitTab: async (tabId: number, urlContains: string | null, textContains: string | null, timeoutSec: number): Promise<{ tab: TabInfo; matched: "url" | "text" | null; elapsedMs: number }> => {
+      const r = await callRecord("tabs/wait", { tabId, urlContains, textContains, timeoutSec }, "rinka: fail-closed（条件待ちに失敗しました）");
+      if (!isTabInfo(r.tab)) throw new Error("rinka: fail-closed（タブ情報が不正です）");
+      const matched = r.matched;
+      if (matched !== "url" && matched !== "text" && matched !== null) {
+        throw new Error("rinka: fail-closed（条件待ちの応答形が不正です）");
+      }
+      if (typeof r.elapsedMs !== "number") throw new Error("rinka: fail-closed（条件待ちの応答形が不正です）");
+      return { tab: r.tab, matched, elapsedMs: r.elapsedMs };
     },
 
     // ---- v2 書込み ----
