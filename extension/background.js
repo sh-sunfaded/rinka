@@ -4,8 +4,8 @@
  * トグル = プロセスと権限の管理:
  *   OFF → READ : browser.runtime.connectNative("rinka") → Firefoxがhostをspawn →
  *                hostがHTTPを開き {t:"ready", port} を返す → バッジ ON
- *   READ→WRITE : ここからが書込み。対象ガード初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）
- *                バッジ W（赤）、hostへ {t:"mode", v:"write"} 通知、タイマー開始
+ *   READ→WRITE : ここからが書込み。対象ガード初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に・
+ *                突入時のoriginを記録して固定）バッジ W（赤）、hostへ {t:"mode", v:"write"} 通知、タイマー開始
  *   WRITE→READ : 自動（RINKA_WRITE_TIMEOUT_SECONDS 既定1800秒）またはFirefoxがhostをkillしたとき
  *   WRITE→OFF  : port.disconnect() → Firefoxがhostをkill（家規1を手順でなくOSが強制）
  *
@@ -14,17 +14,21 @@
  *   addon→host: {t:"resp", id, ok:bool, result|error}（大容量もこの1形。host側の32MBフレーム上限が防衛）
  *               / {t:"mode", v:"read"|"write"}
  *
- * ガード（仕様書v1.1 §3）:
- *   一次mode  : このファイル。WRITE_CMDS は mode==="write" でなければ拒否
+ * ガード（仕様書v1.1 §3。純関数は guards.js＝rinkaGuards。Node側テスト対象）:
+ *   一次mode  : このファイル。rinkaGuards.WRITE_CMDS は mode==="write" でなければ拒否
  *   対象ガード: WRITE区間中にrinka自身がopen_tabした自開タブ（selfTabs）＋
  *               WRITE突入時のアクティブタブ1枚（entryActiveTabId）のみ書込み可。
  *               activate_tab は全タブ可だが対象集合を拡張しない。open_tabは自開タブになるので対象ガード外
+ *   origin固定: 突入時タブ（entryActiveTabId）はWRITE突入時のorigin（entryActiveTabOrigin）に固定。
+ *               書込み時点でタブが別originへ遷移していれば拒否（仕様会議第3回 会議決定2）。
+ *               自開タブはrinka自身が遷移先を選ぶため脅威モデルが違い対象外
  *   固定リミッタ: 書込み対象タブのURLはhttp/httpsのみ（about:/file:/chrome:/moz-extension:/
  *               data:/javascript:/view-source: の内部ページへの書込みは固定拒否）。
  *               open/navigate のURLもhttp/httpsのみ・2048字上限
- *   sudo: password欄は RINKA_SUDO_FILL が真で、かつ RINKA_SUDO_FILL_URLS（空=全許可）の
+ *   sudo: password欄は RINKA_SUDO_FILL が真で、かつ RINKA_SUDO_FILL_URLS（空=全拒否・fail-closed）の
  *               境界照合（origin完全一致＋パス境界。startsWith不採用=bank.example.evil.comバイパス対策）
- *               に通るときだけin-pageで入力する
+ *               に通るときだけin-pageで入力する。照合はrinkaGuards.sudoUrlAllowed（純関数）を
+ *               backgroundが計算し、in-pageへは結果の真偽のみ渡す
  *   二次mode  : host側（tools.ts の requireWriteMode、不整合への保険）
  *
  * page_click/page_fill/page_scroll は合成イベント（isTrusted:false）。
@@ -43,64 +47,15 @@ let writeTimeoutSec = 1800; // hostから {t:"cfg"} で上書きされる（RINK
 let writeTimer = null; // WRITE自動落ちタイマー
 let selfTabs = new Set(); // WRITE区間中にrinkaがopen_tabした自開タブ
 let entryActiveTabId = null; // WRITE突入時のアクティブタブ（1枚だけ特別に書込み可）
+let entryActiveTabOrigin = null; // 突入時タブのorigin（null=http以外で突入＝そのタブへの書込みは不可）
 
-const WRITE_CMDS = new Set([
-  "tabs/open",
-  "tabs/close",
-  "tabs/activate",
-  "tabs/navigate",
-  "tabs/reload",
-  "tabs/back",
-  "tabs/forward",
-  "page/click",
-  "page/fill",
-  "page/scroll",
-]);
+// ガードの純関数群（WRITE_CMDS・案内文言・msg・tabInfo・requireHttpUrl・requireHttpTab・guardWrite・
+// originOf・requireEntryOrigin・sudoUrlAllowed）は guards.js の rinkaGuards にある。manifest の
+// background.scripts で本ファイルより先に読み込まれ、test/run-tests.ts がNode側で直接検査する。
 
-const WRITE_MODE_GUIDE =
-  "書き込みツールはWRITE状態でのみ実行できます。Firefoxのrinkaアイコンをもう1回クリックしてWRITE（バッジW）にしてください";
-const TARGET_GUIDE =
-  "対象タブは書込み許可集合の外です。WRITE開始時に開いていたユーザータブを書き換えるには、そのタブを開いた状態で WRITE に入り直すか、rinkaに open_tab から開かせてください";
-
-function msg(e) {
-  return e instanceof Error ? e.message : String(e);
-}
-
-function tabInfo(t) {
-  return { tabId: t.id, url: t.url ?? "", title: t.title ?? "", active: t.active };
-}
-
-/** open/navigate のURL: http/https のみ・2048字上限（固定リミッタ）。 */
-function requireHttpUrl(raw) {
-  if (typeof raw !== "string" || raw.length === 0) throw new Error("url は空でない文字列で指定してください");
-  if (!/^https?:\/\//i.test(raw)) throw new Error("url は http:// または https:// で始めてください（実測: " + raw + "）");
-  if (raw.length > 2048) throw new Error("url が長すぎます（2048字上限）");
-  return raw;
-}
-
-/** 書込み対象タブのURL: http/https のみ（内部ページへの書込みは固定拒否）。 */
-function requireHttpTab(tab) {
-  const u = tab.url ?? "";
-  if (u === "about:blank" || u === "") {
-    // 実機 2026-11-22: open_tab 直後は遷移コミット前なのでここに入る。固定拒否は不変だが案内を分ける
-    throw new Error(
-      "このタブはまだページの読込が完了していません（about:blank）。画面が表示されてから書き込んでください。" +
-        "ずっとabout:blankのままなら外部サイトへの到達性（ネットワーク・DNS・プロキシ）の確認を。書込み先はhttp/httpsのタブのみです"
-    );
-  }
-  if (!/^https?:\/\//i.test(u)) {
-    throw new Error("内部ページへの書込みは固定拒否です: " + u + "（書込み先はhttp/httpsのタブのみ）");
-  }
-}
-
-/** 一次modeガード＋対象ガード。open/activate は対象ガード外（開いた瞬間に自開タブ化／集合を広げない）。 */
-function guardWrite(cmd, args) {
-  if (mode !== "write") throw new Error(WRITE_MODE_GUIDE);
-  if (cmd !== "tabs/open" && cmd !== "tabs/activate") {
-    const t = typeof args.tabId === "number" && Number.isInteger(args.tabId) ? args.tabId : null;
-    if (t === null) throw new Error("tabId は整数で指定してください");
-    if (!selfTabs.has(t) && t !== entryActiveTabId) throw new Error(TARGET_GUIDE);
-  }
+/** WRITE系cmdの検査に渡すaddon状態のスナップショット（guards.js純関数は外部状態を触らない）。 */
+function writeState() {
+  return { mode, selfTabs, entryActiveTabId, entryActiveTabOrigin };
 }
 
 /** in-page実行の共通化。 throwingの代わりに {ok:false, error} を返すfuncと組で使う。 */
@@ -112,7 +67,7 @@ async function runInPage(tabId, func, args) {
     // Firefox MV3は host_permissions を optional 扱いにする。未許可のタブでは scripting が拒否される
     throw new Error(
       "in-page実行が拒否されました（" +
-        msg(e) +
+        rinkaGuards.msg(e) +
         "）。about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可してください"
     );
   }
@@ -159,22 +114,9 @@ function clickFunc(target) {
   }
 }
 
-function fillFunc(fields, sudoFill, sudoFillUrls) {
+// sudo境界照合はbackground（rinkaGuards.sudoUrlAllowed）で済ませてあるので、ここは結果の真偽を受け取るだけ
+function fillFunc(fields, sudoFill, sudoAllowed) {
   try {
-    const loc = new URL(location.href);
-    // 境界照合: origin完全一致＋パス境界。startsWith不採用＝bank.example.evil.comバイパス対策
-    function sudoUrlAllowed() {
-      if (!Array.isArray(sudoFillUrls) || sudoFillUrls.length === 0) return true; // 空allowlistは全URL許可
-      for (const raw of sudoFillUrls) {
-        let u;
-        try { u = new URL(raw); } catch { continue; }
-        if (u.origin !== loc.origin) continue;
-        const ap = u.pathname && u.pathname !== "" ? u.pathname : "/";
-        const lp = loc.pathname && loc.pathname !== "" ? loc.pathname : "/";
-        if (ap === "/" || lp === ap || lp.startsWith(ap.endsWith("/") ? ap : ap + "/")) return true;
-      }
-      return false;
-    }
     const allowedInput = { "": true, text: true, search: true, email: true, url: true, tel: true, password: true, number: true };
     // パス1: 全欄を事前検査（1欄不合格で全欄不実行）
     const targets = [];
@@ -190,7 +132,7 @@ function fillFunc(fields, sudoFill, sudoFillUrls) {
         if (type === "password" && sudoFill !== true) {
           return { ok: false, error: "fill: password欄への入力はRINKA_SUDO_FILL設定で許可されたときのみ可能です" };
         }
-        if (type === "password" && !sudoUrlAllowed()) {
+        if (type === "password" && sudoAllowed !== true) {
           return { ok: false, error: "fill: このURLはRINKA_SUDO_FILL_URLSの境界照合に通りません（origin完全一致＋パス境界）" };
         }
       } else if (tag === "textarea" || tag === "select") {
@@ -386,11 +328,11 @@ async function handleReq(m) {
       // Firefox MV3は host_permissions を optional 扱いにする。未許可のタブでは scripting が拒否される
       throw new Error(
         "本文の取得が拒否されました（" +
-          msg(e) +
+          rinkaGuards.msg(e) +
           "）。about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可してください"
       );
     }
-    return { tab: tabInfo(tab), text };
+    return { tab: rinkaGuards.tabInfo(tab), text };
   }
   if (cmd === "tabs/capture") {
     if (typeof browser.tabs.captureTab !== "function") {
@@ -402,7 +344,7 @@ async function handleReq(m) {
     const tab = await browser.tabs.get(args.tabId);
     const dataUrl = await browser.tabs.captureTab(args.tabId);
     const b64 = String(dataUrl).split(",")[1] ?? "";
-    return { tab: tabInfo(tab), base64: b64 };
+    return { tab: rinkaGuards.tabInfo(tab), base64: b64 };
   }
   if (cmd === "history/search") {
     const items = await browser.history.search({
@@ -422,17 +364,17 @@ async function handleReq(m) {
   if (cmd === "selects/list") {
     const tab = await browser.tabs.get(args.tabId);
     const r = await runInPage(args.tabId, selectsFunc, [args.selector]);
-    return { tab: tabInfo(tab), selects: r.selects };
+    return { tab: rinkaGuards.tabInfo(tab), selects: r.selects };
   }
   if (cmd === "probe/list") {
     const tab = await browser.tabs.get(args.tabId);
     const r = await runInPage(args.tabId, probeFunc, [args.selector, args.limit ?? 20]);
-    return { tab: tabInfo(tab), total: r.total, elements: r.elements };
+    return { tab: rinkaGuards.tabInfo(tab), total: r.total, elements: r.elements };
   }
   if (cmd === "tables/list") {
     const tab = await browser.tabs.get(args.tabId);
     const r = await runInPage(args.tabId, tablesFunc, [args.selector, args.limit ?? 4]);
-    return { tab: tabInfo(tab), tables: r.tables };
+    return { tab: rinkaGuards.tabInfo(tab), tables: r.tables };
   }
   if (cmd === "tabs/wait") {
     // 条件待ち（urlContains/textContains の先着・500ms間隔でpoll）。host側で検査済みだが
@@ -447,12 +389,12 @@ async function handleReq(m) {
     const deadline = start + timeoutSec * 1000;
     if (urlContains === null && textContains === null) {
       const tab = await browser.tabs.get(args.tabId);
-      return { tab: tabInfo(tab), matched: null, elapsedMs: 0 };
+      return { tab: rinkaGuards.tabInfo(tab), matched: null, elapsedMs: 0 };
     }
     while (Date.now() < deadline) {
       const tab = await browser.tabs.get(args.tabId);
       if (urlContains !== null && (tab.url ?? "").includes(urlContains)) {
-        return { tab: tabInfo(tab), matched: "url", elapsedMs: Date.now() - start };
+        return { tab: rinkaGuards.tabInfo(tab), matched: "url", elapsedMs: Date.now() - start };
       }
       if (textContains !== null) {
         let found = false;
@@ -466,99 +408,108 @@ async function handleReq(m) {
         } catch (e) {
           throw new Error(
             "本文の取得が拒否されました（" +
-              msg(e) +
+              rinkaGuards.msg(e) +
               "）。about:addons → rinka → 「権限」で「すべてのウェブサイトのデータへのアクセス」を許可してください"
           );
         }
         if (found) {
-          return { tab: tabInfo(tab), matched: "text", elapsedMs: Date.now() - start };
+          return { tab: rinkaGuards.tabInfo(tab), matched: "text", elapsedMs: Date.now() - start };
         }
       }
       await new Promise((r) => setTimeout(r, 500));
     }
     const tab = await browser.tabs.get(args.tabId);
-    return { tab: tabInfo(tab), matched: null, elapsedMs: Date.now() - start };
+    return { tab: rinkaGuards.tabInfo(tab), matched: null, elapsedMs: Date.now() - start };
   }
 
   // ---- WRITE系（一次modeガード＋対象ガード＋固定リミッタ） ----
   if (cmd === "tabs/open") {
-    guardWrite(cmd, args);
-    requireHttpUrl(args.url);
+    rinkaGuards.guardWrite(cmd, args, writeState());
+    rinkaGuards.requireHttpUrl(args.url);
     const active = args.active !== false; // 既定true
     const tab = await browser.tabs.create({ url: args.url, active });
     selfTabs.add(tab.id); // 開いた瞬間に自開タブ＝書込み対象になる
-    const info = tabInfo(tab);
+    const info = rinkaGuards.tabInfo(tab);
     // Firefox既知挙動（MDN記載・2026-11-22実機で確認）: tabs.create 直後の Tab.url は遷移コミット前なので
     // about:blankを返す。open_tabのresp/監査の正本は「開こうとしたURL」。実コミット状態はlist_tabsで観察する
     if (info.url === "" || info.url === "about:blank") info.url = args.url;
     return { tab: info };
   }
   if (cmd === "tabs/close") {
-    guardWrite(cmd, args);
+    rinkaGuards.guardWrite(cmd, args, writeState());
     const tab = await browser.tabs.get(args.tabId); // 実行前採取（close後は二度と取れない。監査の正本）
+    rinkaGuards.requireEntryOrigin(args.tabId, tab.url, writeState()); // 突入時タブはorigin固定の対象
     await browser.tabs.remove(args.tabId);
     selfTabs.delete(args.tabId);
-    return { tab: tabInfo(tab) };
+    return { tab: rinkaGuards.tabInfo(tab) };
   }
   if (cmd === "tabs/activate") {
-    guardWrite(cmd, args); // 対象ガード外: 全タブ切り替え可。ただし対象集合は広げない
+    rinkaGuards.guardWrite(cmd, args, writeState()); // 対象ガード外: 全タブ切り替え可。ただし対象集合は広げない
     const tab = await browser.tabs.get(args.tabId);
     await browser.tabs.update(args.tabId, { active: true });
-    return { tab: tabInfo(tab) };
+    return { tab: rinkaGuards.tabInfo(tab) };
   }
   if (cmd === "tabs/navigate") {
-    guardWrite(cmd, args);
-    requireHttpUrl(args.url);
+    rinkaGuards.guardWrite(cmd, args, writeState());
+    rinkaGuards.requireHttpUrl(args.url);
     const tab = await browser.tabs.get(args.tabId);
-    requireHttpTab(tab);
+    rinkaGuards.requireHttpTab(tab);
+    rinkaGuards.requireEntryOrigin(args.tabId, tab.url, writeState());
     await browser.tabs.update(args.tabId, { url: args.url });
     let tabAfter;
     try {
-      tabAfter = tabInfo(await browser.tabs.get(args.tabId));
+      tabAfter = rinkaGuards.tabInfo(await browser.tabs.get(args.tabId));
     } catch {
-      tabAfter = { ...tabInfo(tab), url: args.url };
+      tabAfter = { ...rinkaGuards.tabInfo(tab), url: args.url };
     }
-    return { tab: tabInfo(tab), tabAfter };
+    return { tab: rinkaGuards.tabInfo(tab), tabAfter };
   }
   if (cmd === "tabs/reload") {
-    guardWrite(cmd, args);
+    rinkaGuards.guardWrite(cmd, args, writeState());
     const tab = await browser.tabs.get(args.tabId);
-    requireHttpTab(tab);
+    rinkaGuards.requireHttpTab(tab);
+    rinkaGuards.requireEntryOrigin(args.tabId, tab.url, writeState());
     await browser.tabs.reload(args.tabId, { bypassCache: args.bypassCache === true });
-    return { tab: tabInfo(tab) };
+    return { tab: rinkaGuards.tabInfo(tab) };
   }
   if (cmd === "tabs/back" || cmd === "tabs/forward") {
-    guardWrite(cmd, args);
+    rinkaGuards.guardWrite(cmd, args, writeState());
     const tab = await browser.tabs.get(args.tabId);
-    requireHttpTab(tab);
+    rinkaGuards.requireHttpTab(tab);
+    rinkaGuards.requireEntryOrigin(args.tabId, tab.url, writeState());
     await runInPage(args.tabId, cmd === "tabs/back" ? () => { history.back(); return { ok: true }; } : () => { history.forward(); return { ok: true }; }, []);
-    return { tab: tabInfo(tab) };
+    return { tab: rinkaGuards.tabInfo(tab) };
   }
   if (cmd === "page/click") {
-    guardWrite(cmd, args);
+    rinkaGuards.guardWrite(cmd, args, writeState());
     const tab = await browser.tabs.get(args.tabId);
-    requireHttpTab(tab);
+    rinkaGuards.requireHttpTab(tab);
+    rinkaGuards.requireEntryOrigin(args.tabId, tab.url, writeState());
     const target = typeof args.selector === "string" ? { selector: args.selector } : { x: args.x, y: args.y };
     const r = await runInPage(args.tabId, clickFunc, [target]);
-    return { tab: tabInfo(tab), element: r.element };
+    return { tab: rinkaGuards.tabInfo(tab), element: r.element };
   }
   if (cmd === "page/fill") {
-    guardWrite(cmd, args);
+    rinkaGuards.guardWrite(cmd, args, writeState());
     const tab = await browser.tabs.get(args.tabId);
-    requireHttpTab(tab);
+    rinkaGuards.requireHttpTab(tab);
+    rinkaGuards.requireEntryOrigin(args.tabId, tab.url, writeState());
+    // sudo境界照合はbackground（rinkaGuards.sudoUrlAllowed純関数）で計算し、in-pageへは結果の真偽のみ渡す
+    const sudoAllowed = rinkaGuards.sudoUrlAllowed(tab.url ?? "", Array.isArray(args.sudoFillUrls) ? args.sudoFillUrls : []);
     const r = await runInPage(args.tabId, fillFunc, [
       args.fields,
       args.sudoFill === true,
-      Array.isArray(args.sudoFillUrls) ? args.sudoFillUrls : [],
+      sudoAllowed,
     ]);
-    return { tab: tabInfo(tab), fields: r.fields };
+    return { tab: rinkaGuards.tabInfo(tab), fields: r.fields };
   }
   if (cmd === "page/scroll") {
-    guardWrite(cmd, args);
+    rinkaGuards.guardWrite(cmd, args, writeState());
     const tab = await browser.tabs.get(args.tabId);
-    requireHttpTab(tab);
+    rinkaGuards.requireHttpTab(tab);
+    rinkaGuards.requireEntryOrigin(args.tabId, tab.url, writeState());
     const r = await runInPage(args.tabId, scrollFunc, [args.direction, args.amount]);
-    return { tab: tabInfo(tab), scrollY: r.scrollY };
+    return { tab: rinkaGuards.tabInfo(tab), scrollY: r.scrollY };
   }
 
   throw new Error(`未知のcmd: ${cmd}`);
@@ -601,6 +552,7 @@ function exitWriteToRead() {
   }
   selfTabs.clear();
   entryActiveTabId = null;
+  entryActiveTabOrigin = null; // origin固定も突入情報ごと消す
   setBadge("read");
   sendMode("read");
 }
@@ -608,9 +560,13 @@ function exitWriteToRead() {
 async function enterWrite() {
   selfTabs.clear();
   entryActiveTabId = null;
+  entryActiveTabOrigin = null;
   try {
     const tabs = await browser.tabs.query({ active: true, lastFocusedWindow: true });
-    if (tabs.length > 0) entryActiveTabId = tabs[0].id; // 1枚だけ特別に書込み可
+    if (tabs.length > 0) {
+      entryActiveTabId = tabs[0].id; // 1枚だけ特別に書込み可
+      entryActiveTabOrigin = rinkaGuards.originOf(tabs[0].url ?? ""); // 突入時タブはこのoriginに固定（仕様会議第3回 会議決定2）
+    }
   } catch {
     // 取れなければ対象はrinka自開タブのみ（安全側）
   }
@@ -636,16 +592,16 @@ async function onPortMessage(m) {
     return;
   }
   if (m.t === "req") {
-    const isWriteCmd = WRITE_CMDS.has(m.cmd);
+    const isWriteCmd = rinkaGuards.WRITE_CMDS.has(m.cmd);
     try {
       if (isWriteCmd && mode !== "write") {
         // 一次modeガード。ここを通らない書込みcmdはない
-        throw new Error(WRITE_MODE_GUIDE);
+        throw new Error(rinkaGuards.WRITE_MODE_GUIDE);
       }
       const result = await handleReq(m); // 内部でもう一度mode/対象/リミッタを検査（二重だが独立に安全）
       port.postMessage({ t: "resp", id: m.id, ok: true, result });
     } catch (e) {
-      port.postMessage({ t: "resp", id: m.id, ok: false, error: msg(e) });
+      port.postMessage({ t: "resp", id: m.id, ok: false, error: rinkaGuards.msg(e) });
     }
     // 書込みcmd毎に自動落ちタイマーをリセット（成否を問わず。呼び出しがある＝使っている）
     if (isWriteCmd) resetWriteTimer();
@@ -663,6 +619,7 @@ function onDisconnect() {
   }
   selfTabs.clear();
   entryActiveTabId = null;
+  entryActiveTabOrigin = null;
   setBadge(false);
 }
 

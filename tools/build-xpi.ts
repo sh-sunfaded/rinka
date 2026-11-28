@@ -170,6 +170,7 @@ export const buildExtensionXpi = (rootDir: string, outDir: string): string => {
   if (version === "") throw new Error("rinka: manifest.json に version がありません");
   const entries: XpiEntry[] = [
     { name: "manifest.json", data: readFileSync(join(extDir, "manifest.json")) },
+    { name: "guards.js", data: readFileSync(join(extDir, "guards.js")) },
     { name: "background.js", data: readFileSync(join(extDir, "background.js")) },
     { name: "icons/icon.svg", data: readFileSync(join(extDir, "icons", "icon.svg")) },
   ];

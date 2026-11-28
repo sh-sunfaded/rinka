@@ -23,7 +23,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 ```
 
 - **トグル＝プロセス管理**。ON: アドオンが `connectNative("rinka")` → Firefoxがhostをspawn → hostが `127.0.0.1:8765/mcp` を開き `{t:"ready", port}` を返す。OFF: `port.disconnect()` → Firefoxがhostをkill → リスナー消滅。「露出は使用時のみ」を手順でなくOSが強制する。
-- READ→WRITEはプロセスを増やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
+- READ→WRITEはプロセスを増やさない状態切替。アドオンが `{t:"mode", v:"write"}` をhostへ通知し、対象ガードを初期化（WRITE突入時のアクティブタブ1枚のみ書込み可に・突入時のoriginを記録して固定）して、タイマーを開始する。WRITE→READはタイマー（`RINKA_WRITE_TIMEOUT_SECONDS`、既定1800秒・書込みcmd毎にリセット）で自動落下。
 - ページ読み取りは innerText（依存ゼロ・SPA対応）。
 
 ## ツール19本（読み取り8＋書き込み10＋マクロ1）
@@ -78,14 +78,15 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 3層構造。すべての検査は失敗方向（fail-closed）に倒している。
 
 1. **一次modeガード（addon）**: 書込みcmdはWRITE状態でなければ拒否（案内文言付き）
-2. **対象ガード（addon）**: WRITE区間中にrinka自身が `open_tab` した自開タブ＋WRITE突入時のアクティブタブ1枚のみ書込み可。それ以外のユーザータブは拒否。`activate_tab` は全タブ可だが対象集合を拡張しない
-3. **二次modeガード（host）**: tools.ts が直前のmode通知と突き合わせ、不整合なら拒否（addon改竄・bugへの保険）
+2. **対象ガード（addon）**: WRITE区間中にrinka自身が `open_tab` した自開タブ＋WRITE突入時のアクティブタブ1枚のみ書込み可。それ以外のユーザータブは拒否。`activate_tab` は全タブ可だが対象集合を拡張しない。ガードの純関数は `extension/guards.js`（`rinkaGuards`）にあり、Node側テストが直接検査する
+3. **origin固定（addon）**: 突入時タブはWRITE突入時点のoriginに固定され、書込み時点で別originへ遷移していれば拒否（サイトをまたぐ遷移から入力欄を守る）。自開タブはrinka自身が遷移先を選ぶため対象外
+4. **二次modeガード（host）**: tools.ts が直前のmode通知と突き合わせ、不整合なら拒否（addon改竄・bugへの保険）
 
 固定リミッタ（設定で解けない固定線）:
 
 - 書込み対象タブのURLは **http/httpsのみ**（about:/file:/chrome:/moz-extension:/data:/javascript:/view-source: への書込みは固定拒否）
 - `open_tab` / `navigate_tab` のURLもhttp/httpsのみ・2048字上限
-- **sudo fill**: password欄への `page_fill` は `RINKA_SUDO_FILL=1` が許可し、かつ `RINKA_SUDO_FILL_URLS`（カンマ区切り。`RINKA_SUDO_FILL=1` のとき空は**起動拒否**・fail-closed）の**境界照合**（origin完全一致＋パス境界。`startsWith` 不採用＝`bank.example.evil.com` 型バイパス対策）に通るときだけ実行。照合はexecuteScript内で行う
+- **sudo fill**: password欄への `page_fill` は `RINKA_SUDO_FILL=1` が許可し、かつ `RINKA_SUDO_FILL_URLS`（カンマ区切り。`RINKA_SUDO_FILL=1` のとき空は**起動拒否**・fail-closed）の**境界照合**（origin完全一致＋パス境界。`startsWith` 不採用＝`bank.example.evil.com` 型バイパス対策・allowlistが空のまま届いても**全拒否**）に通るときだけ実行。照合はbackgroundのguards.js純関数で行い、in-pageへは結果の真偽のみ渡す
 
 ## 既知の限界
 
@@ -217,11 +218,11 @@ hostとportは `RINKA_HOST` / `RINKA_PORT` に従う（既定 `127.0.0.1:8765`�
 ## 開発
 
 ```sh
-node --experimental-strip-types --no-warnings test/run-tests.ts   # 77テスト（node:test / node:assert）
+node --experimental-strip-types --no-warnings test/run-tests.ts   # 89テスト（node:test / node:assert）
 bash tools/ts-style-check.sh                                      # 構文規約のgrep機械検査。exit 0 = 規約どおり
 ```
 
-テストは標準ライブラリの `node:test` + `node:assert` のみで、自作ハーネスは使わない。FakeBackendによる tools / audit / config 検査、Native Messagingフレーミング、セッションレスHTTP統合、hostをspawnしてアドオン役を演じるE2E（ready → cfg → 401 → initialize → tools/call → READ時書込み拒否 → mode受信 → WRITE書込み往復 → exit 0）までを含む。
+テストは標準ライブラリの `node:test` + `node:assert` のみで、自作ハーネスは使わない。FakeBackendによる tools / audit / config 検査、Native Messagingフレーミング、セッションレスHTTP統合、hostをspawnしてアドオン役を演じるE2E（ready → cfg → 401 → initialize → tools/call → READ時書込み拒否 → mode受信 → WRITE書込み往復 → exit 0）までを含む。拡張側ガードの純関数（guards.js: 対象ガード・origin固定・sudo境界照合・URL/タブ検査）も同じ1コマンドでNode側から直接検査し、xpi配布物にguards.jsが入ることも機械検証する。
 
 ## ロードマップ
 

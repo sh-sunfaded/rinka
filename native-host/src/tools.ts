@@ -11,7 +11,7 @@
  * v2 書込みのガード（仕様書v1.1 §3）:
  *   一次: addon（background.js）modeガード＋対象ガード＋スキーム検査
  *   二次: このファイルのmode検査（addon不整合への保険。READなら案内付きで拒否）
- *   対象ガード・sudo境界照合の中身はaddon側in-page（respのエラー文言がそのまま伝わる）
+ *   対象ガード・origin固定・sudo境界照合の中身はaddon側（guards.js純関数・respのエラー文言がそのまま伝わる）
  *
  * v3 マクロ（run_macro・仕様会議第1回 2026-11-27採決）:
  *   callTool は「検査半分（validateToolArgs: 副作用なし）」と「実行半分（execTool: backend＋監査）」に分割。

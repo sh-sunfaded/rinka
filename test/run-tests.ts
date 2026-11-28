@@ -24,7 +24,7 @@ import { TOOLS, callTool, wrapUntrusted, isWriteTool } from "../native-host/src/
 import { isRpcOk, SERVER_INFO, SUPPORTED_PROTOCOL, handleRpcMessage } from "../native-host/src/mcp.ts";
 import { startServer, tokenMatches } from "../native-host/src/http.ts";
 import type { RunningServer } from "../native-host/src/http.ts";
-import { buildXpi, readCentralDirectory, verifyStored } from "../tools/build-xpi.ts";
+import { buildXpi, buildExtensionXpi, readCentralDirectory, verifyStored } from "../tools/build-xpi.ts";
 import { isRecord } from "../native-host/src/types.ts";
 import type { Backend, BackendMode, FillField } from "../native-host/src/types.ts";
 import type { ToolDeps } from "../native-host/src/tools.ts";
@@ -1149,4 +1149,167 @@ test("docs: READMEのテスト数表記は本ファイルのtest件数と一致�
   const readmeMatch = readme.match(/(\d+)テスト/);
   const stated = readmeMatch === null ? "" : readmeMatch[1];
   assert.equal(stated, String(count), "READMEの「Nテスト」表記がずれたら更新する");
+});
+
+// ============ 11. guards.js（拡張側ガードの純関数・Node側テスト基盤・仕様会議第3回 P2/P3/会議決定2） ============
+
+const guardsSrc = readFileSync(join(ROOT, "extension", "guards.js"), "utf8");
+
+/** guards.js（classic script）をNodeで読み込んでrinkaGuards表を返す。純関数のみなので外部依存なし。 */
+const loadGuards = (): Record<string, unknown> => {
+  const raw: unknown = new Function(`${guardsSrc}\nreturn globalThis.rinkaGuards;`)();
+  if (!isRecord(raw)) throw fail("rinkaGuards");
+  return raw;
+};
+
+/** unknownの関数欄を実呼び出し可能な形に絞る（as断言不使用規約）。 */
+const expectFn = (v: unknown, what: string): ((...a: unknown[]) => unknown) => {
+  if (typeof v !== "function") throw fail(what);
+  return v;
+};
+
+const GUARDS = loadGuards();
+const gMsg = expectFn(GUARDS.msg, "msg");
+const gTabInfo = expectFn(GUARDS.tabInfo, "tabInfo");
+const gRequireHttpUrl = expectFn(GUARDS.requireHttpUrl, "requireHttpUrl");
+const gRequireHttpTab = expectFn(GUARDS.requireHttpTab, "requireHttpTab");
+const gGuardWrite = expectFn(GUARDS.guardWrite, "guardWrite");
+const gOriginOf = expectFn(GUARDS.originOf, "originOf");
+const gRequireEntryOrigin = expectFn(GUARDS.requireEntryOrigin, "requireEntryOrigin");
+const gSudoUrlAllowed = expectFn(GUARDS.sudoUrlAllowed, "sudoUrlAllowed");
+
+/** guardWrite/requireEntryOriginに渡すaddon状態（guards.js純関数は外部状態を触らないので引数で渡す）。 */
+const gState = (mode: string, selfTabs: number[], entryId: number | null, entryOrigin: string | null): Record<string, unknown> => ({
+  mode,
+  selfTabs: new Set(selfTabs),
+  entryActiveTabId: entryId,
+  entryActiveTabOrigin: entryOrigin,
+});
+
+test("guards: API面（純関数群の一括公開・browser API不使用・importなし・決定的）", () => {
+  for (const k of ["WRITE_CMDS", "WRITE_MODE_GUIDE", "TARGET_GUIDE", "ENTRY_ORIGIN_GUIDE", "msg", "tabInfo", "requireHttpUrl", "requireHttpTab", "guardWrite", "originOf", "requireEntryOrigin", "sudoUrlAllowed"]) {
+    assert.ok(k in GUARDS, `rinkaGuardsが ${k} を持つこと`);
+  }
+  const cmds: unknown = GUARDS.WRITE_CMDS;
+  if (!(cmds instanceof Set)) throw fail("WRITE_CMDS");
+  assert.equal(cmds.size, 10, "WRITE_CMDSは10 cmd");
+  assert.ok(cmds.has("page/fill") && cmds.has("tabs/open"));
+  assert.ok(guardsSrc.includes("globalThis.rinkaGuards"), "globalThisへの一括公開がある");
+  assert.ok(!guardsSrc.includes("browser."), "browser APIを触らない純関数のみ");
+  assert.ok(!/^import /m.test(guardsSrc), "依存ゼロ（importしない）");
+});
+
+test("guards: guardWrite — modeガード（READではWRITE_CMDS全cmdがWRITE案内文言で拒否）", () => {
+  const cmds: unknown = GUARDS.WRITE_CMDS;
+  if (!(cmds instanceof Set)) throw fail("WRITE_CMDS");
+  for (const cmd of cmds) {
+    assert.throws(() => gGuardWrite(cmd, { tabId: 1 }, gState("read", [], 1, null)), /WRITE状態でのみ/, String(cmd));
+  }
+  const write = gState("write", [], null, null);
+  assert.doesNotThrow(() => gGuardWrite("tabs/open", {}, write), "WRITE時のopenはtabId不要");
+  assert.doesNotThrow(() => gGuardWrite("tabs/activate", { tabId: 99 }, write), "WRITE時のactivateはtabIdが対象外でも可");
+});
+
+test("guards: guardWrite — 対象ガード（tabId検査・自開タブと突入時タブは許可・対象外は拒否）", () => {
+  const s = gState("write", [7, 8], 3, "https://bank.example");
+  assert.throws(() => gGuardWrite("page/click", {}, s), /tabId は整数/);
+  assert.throws(() => gGuardWrite("page/click", { tabId: 1.5 }, s), /tabId は整数/);
+  assert.throws(() => gGuardWrite("page/click", { tabId: "3" }, s), /tabId は整数/);
+  assert.throws(() => gGuardWrite("page/click", { tabId: 99 }, s), /対象タブは書込み許可集合の外/);
+  assert.doesNotThrow(() => gGuardWrite("page/click", { tabId: 7 }, s), "自開タブは書込み可");
+  assert.doesNotThrow(() => gGuardWrite("page/fill", { tabId: 3 }, s), "突入時タブは書込み可");
+});
+
+test("guards: requireHttpUrl — http/https通過・2048上限・それ以外は拒否", () => {
+  assert.equal(gRequireHttpUrl("https://example.com/", undefined), "https://example.com/");
+  assert.equal(gRequireHttpUrl("http://example.com", undefined), "http://example.com");
+  assert.throws(() => gRequireHttpUrl("about:blank", undefined), /で始めてください/);
+  assert.throws(() => gRequireHttpUrl("ftp://example.com/", undefined), /で始めてください/);
+  assert.throws(() => gRequireHttpUrl("https://" + "a".repeat(2100), undefined), /2048字上限/);
+  assert.throws(() => gRequireHttpUrl("", undefined), /空でない文字列/);
+});
+
+test("guards: requireHttpTab — about:blank案内・内部ページ固定拒否・http(s)通過", () => {
+  assert.throws(() => gRequireHttpTab({ url: "about:blank" }), /まだページの読込が完了/);
+  assert.throws(() => gRequireHttpTab({}, undefined), /まだページの読込が完了/);
+  assert.throws(() => gRequireHttpTab({ url: "file:///etc/passwd" }), /内部ページへの書込みは固定拒否/);
+  assert.throws(() => gRequireHttpTab({ url: "chrome://browser/content/browser.xhtml" }), /内部ページへの書込みは固定拒否/);
+  assert.doesNotThrow(() => gRequireHttpTab({ url: "https://example.com/x" }));
+});
+
+test("guards: originOf — http(s)はorigin・それ以外はnull（opaque originは比較に使わない）", () => {
+  assert.equal(gOriginOf("https://example.com/a?b=1#c", undefined), "https://example.com");
+  assert.equal(gOriginOf("http://example.com:8080/x", undefined), "http://example.com:8080");
+  assert.equal(gOriginOf("about:blank", undefined), null);
+  assert.equal(gOriginOf("chrome://browser/content/browser.xhtml", undefined), null);
+  assert.equal(gOriginOf("example.com", undefined), null);
+  assert.equal(gOriginOf(undefined, undefined), null);
+  assert.equal(gOriginOf(null, undefined), null);
+});
+
+test("guards: requireEntryOrigin — 突入時タブは突入時originに固定（会議決定2・fail-closed）", () => {
+  const s = gState("write", [], 3, "https://bank.example");
+  assert.doesNotThrow(() => gRequireEntryOrigin(9, "https://evil.example/", s), "突入時タブ以外（自開タブ等）は対象外");
+  assert.doesNotThrow(() => gRequireEntryOrigin(3, "https://bank.example/transfer?id=7", s), "同一originなら経路が変わっても通過");
+  assert.throws(() => gRequireEntryOrigin(3, "https://evil.example/", s), /別のサイト/, "origin不一致は拒否");
+  assert.throws(
+    () => gRequireEntryOrigin(3, "https://bank.example/", gState("write", [], 3, null)),
+    /別のサイト/,
+    "突入時origin未記録（http以外で突入）のままhttpに移ったら拒否・fail-closed"
+  );
+  assert.doesNotThrow(() => gRequireEntryOrigin(3, "about:blank", s), "現在が非http(s)はrequireHttpTab側の固定拒否に委ねる");
+  assert.doesNotThrow(() => gRequireEntryOrigin(3, undefined, s), "URL不明も同様にrequireHttpTab側に委ねる（closeはrequireHttpTab無しで許可・内部ページのcloseは無害）");
+});
+
+test("guards: sudoUrlAllowed — 空allowlistは全拒否（fail-closed・host側の起動拒否と対）", () => {
+  assert.equal(gSudoUrlAllowed("https://bank.example/", []), false);
+  assert.equal(gSudoUrlAllowed("https://bank.example/", undefined), false);
+  assert.equal(gSudoUrlAllowed("about:blank", undefined), false);
+  assert.equal(gSudoUrlAllowed(undefined, ["https://a/"]), false);
+});
+
+test("guards: sudoUrlAllowed — 境界照合（origin完全一致＋パス境界・バイパス不成立）", () => {
+  assert.equal(gSudoUrlAllowed("https://bank.example/login", ["https://bank.example/"]), true, "ルート許可はorigin全域");
+  assert.equal(gSudoUrlAllowed("https://bank.example/login", ["https://bank.example/login"]), true);
+  assert.equal(gSudoUrlAllowed("https://bank.example/login/sub", ["https://bank.example/login/"]), true, "パス境界: 末尾スラッシュ配下");
+  assert.equal(gSudoUrlAllowed("https://bank.example.evil.com/", ["https://bank.example/"]), false, "origin完全一致でevil.com型バイパス不成立");
+  assert.equal(gSudoUrlAllowed("https://bank.example/loginize", ["https://bank.example/login"]), false, "パス境界: loginizeはlogin配下でない");
+  assert.equal(gSudoUrlAllowed("https://bank.example/", ["https://other.example/", "::::", "https://bank.example/"]), true, "無効URL混入はskipして継続");
+  assert.equal(gSudoUrlAllowed("https://sub.bank.example/", ["https://bank.example/"]), false, "サブドメインはorigin不一致");
+});
+
+test("guards: msg/tabInfo — 整形と既定値", () => {
+  assert.equal(gMsg(new Error("x"), undefined), "x");
+  assert.equal(gMsg("str", undefined), "str");
+  const info: unknown = gTabInfo({ id: 5, url: "https://a/" });
+  if (!isRecord(info)) throw fail("tabInfo結果");
+  assert.equal(info.tabId, 5);
+  assert.equal(info.url, "https://a/");
+  assert.equal(info.title, "", "title欠損は空文字既定");
+});
+
+test("guards: background.jsはrinkaGuards経由で使う（旧定義残存・in-page境界照合複製の静的検査）", () => {
+  const bg = readFileSync(join(ROOT, "extension", "background.js"), "utf8");
+  assert.ok(!/^function (msg|tabInfo|requireHttpUrl|requireHttpTab|guardWrite)\(/m.test(bg), "ガード純関数の旧定義が残っていない");
+  assert.ok(!/^const WRITE_CMDS/m.test(bg), "WRITE_CMDSの旧定義が残っていない");
+  assert.ok(bg.includes("rinkaGuards.guardWrite("), "guardWriteはrinkaGuards経由");
+  assert.ok(bg.includes("rinkaGuards.requireEntryOrigin("), "origin固定の呼び出しがある");
+  assert.ok(bg.includes("rinkaGuards.sudoUrlAllowed("), "sudo境界照合はbackgroundで計算している");
+  assert.ok(!bg.includes("function sudoUrlAllowed"), "in-pageへの境界照合複製が残っていない（真偽のみ渡す）");
+  assert.ok(bg.includes("entryActiveTabOrigin"), "突入時originの記録がある");
+});
+
+test("guards: xpi配布物とmanifest — guards.jsが入り、background.scriptsはguards→backgroundの順", () => {
+  const manifestRaw: unknown = JSON.parse(readFileSync(join(ROOT, "extension", "manifest.json"), "utf8"));
+  const manifest = expectRecord(manifestRaw, "manifest");
+  const bgField = expectRecord(manifest.background, "background");
+  const scripts = expectArray(bgField.scripts, "scripts");
+  assert.deepEqual(scripts, ["guards.js", "background.js"], "guards.jsが先に読み込まれる");
+  const outPath = buildExtensionXpi(ROOT, join(tmp, "xpi-guards"));
+  const records = readCentralDirectory(readFileSync(outPath));
+  assert.deepEqual(
+    records.map((r) => r.name),
+    ["manifest.json", "guards.js", "background.js", "icons/icon.svg"],
+    "実xpiにguards.jsが入っている"
+  );
 });

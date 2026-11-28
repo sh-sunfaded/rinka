@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "rinka",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "description": "Vibe MCP橋。ツールバーアイコンでOFF/ON/WRITEを循環切替。ONの間はFirefoxの読み取りツール（タブ一覧・本文・select選択肢列挙・要素列挙・表構造・条件待ち・スクリーンショット・履歴検索）、WRITE（バッジW・自動落ちあり）の間は書込みツール（タブ操作・ナビゲーション・クリック・フォーム入力・スクロール）をVibe Workに貸す。",
   "browser_specific_settings": {
     "gecko": {
@@ -13,7 +13,7 @@
     }
   },
   "background": {
-    "scripts": ["background.js"]
+    "scripts": ["guards.js", "background.js"]
   },
   "action": {
     "default_title": "rinka: クリックでON/OFF切替"
