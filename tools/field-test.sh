@@ -114,12 +114,17 @@ if [[ -n "$ACTIVE_ID" ]]; then
   fi
 fi
 
-# ---- 6. screenshot: 非活性タブ（captureTab観察） ----
+# ---- 6. screenshot: 非活性タブ（captureTab観察。非描画タブはFirefox APIが撮らない） ----
 if [[ -n "$BG_ID" && "$BG_ID" != "null" ]]; then
   R="$(req "{\"jsonrpc\":\"2.0\",\"id\":5,\"method\":\"tools/call\",\"params\":{\"name\":\"screenshot\",\"arguments\":{\"tabId\":$BG_ID}}}")"
   LEN2="$(j "$R" -r '.result.structuredContent.pngBase64 // "" | length')"
-  [[ "${LEN2:-0}" -gt 0 ]] && ok "screenshot(非活性tabId=$BG_ID): ${LEN2}字（非活性も撮れる）" \
-                        || { fail "非活性タブの撮影に失敗"; head_ "$R"; }
+  if [[ "${LEN2:-0}" -gt 0 ]]; then
+    ok "screenshot(非活性tabId=$BG_ID): ${LEN2}字（非活性も撮れる）"
+  elif grep -q "Cannot capture invisible tab" <<<"$R"; then
+    echo "  [info] 非活性タブ(tabId=$BG_ID)が非描画（未読込の復元タブ・最小化ウィンドウ等）のためFirefox APIが撮影を拒否。描画済みの背景タブなら[OK]になる既知限界で、rinka側の異常ではない。当該タブを一度開いてから再実行すると[OK]になる"
+  else
+    fail "非活性タブの撮影に失敗"; head_ "$R"
+  fi
 else
   echo "  背景タブが無いので非活性撮影は省略"
 fi

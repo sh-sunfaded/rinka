@@ -93,6 +93,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 - `go_back` / `go_forward` の遷移先は事前検証不能（session history APIが無いため）
 - ページ側ハンドラが入力途中でフォームを送信する場合、`page_fill` はそれを止められない
 - main frame以外のスクロール容器を持つSPAでは `page_scroll` の scrollY が動かないことがある
+- 描画されていないタブ（未読込のセッション復元タブ・最小化ウィンドウ内のタブ等）は `screenshot` で撮影できない（Firefox APIが「Cannot capture invisible tab」で拒否。2026-11-28実機で確認。一度そのタブを開いて描画させてから撮る）
 - `run_macro` の応答サイズに上限は無い。`screenshot` を含むステップを多数並べると応答が巨大になる（1枚が既定4MBまで。撮影は通常 単体工具で呼ぶ）。`read_tab` もステップ数 × 64KBまで積み上がる
 - `run_macro` は1リクエスト内で完走する。funnel経由の潜時（1呼び5〜15秒）がステップ数に効くため、大きいマクロはクライアント側の応答タイムアウトに掛かり得る（実行自体は済んでおり監査に記録が残る。届かないのは部分レポートの側）
 
