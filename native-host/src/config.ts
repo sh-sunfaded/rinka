@@ -8,7 +8,7 @@
  * - ポート: 1〜65535、または0（ephemeral。テストと ready 報告用）。
  * - v2 書込み系: RINKA_WRITE_TIMEOUT_SECONDS（WRITE自動落ち・既定1800）、
  *   RINKA_SUDO_FILL（password欄fill許可・既定false）、
- *   RINKA_SUDO_FILL_URLS（allowlist・カンマ区切り・空は全URL許可。境界照合はin-page）、
+ *   RINKA_SUDO_FILL_URLS（allowlist・カンマ区切り。sudo有効時に空は起動拒否。境界照合はin-page）、
  *   RINKA_FILL_MAX_BYTES（fill値の1欄あたり上限・既定4096）。
  * - v3 マクロ: RINKA_MACRO_BUDGET_SECONDS（run_macro全体の予算・既定300。
  *   ステップ毎の15秒打ち切りと合わせ、アドオンのWRITE自動落下とは別系統のhost側上限）。
@@ -29,7 +29,7 @@ export type Config = {
   writeTimeoutSec: number;
   /** password欄へのfillが許可されているか（sudo権限。既定false）。 */
   sudoFill: boolean;
-  /** sudo有効時のURL allowlist。空なら全URL許可。境界照合（startsWith不採用）はin-page。 */
+  /** sudo有効時のURL allowlist。sudo=1で空なら起動拒否（fail-closed・仕様会議第3回）。境界照合（startsWith不採用）はin-page。 */
   sudoFillUrls: string[];
   /** page_fill 1欄あたりのvalueバイト上限。 */
   fillMaxBytes: number;
@@ -160,6 +160,10 @@ export const validateEnvironment = (env: Record<string, string | undefined>, hom
   const writeTimeoutSec = intRange("RINKA_WRITE_TIMEOUT_SECONDS", env.RINKA_WRITE_TIMEOUT_SECONDS, 1800, 1, 86400);
   const sudoFill = boolStrict("RINKA_SUDO_FILL", env.RINKA_SUDO_FILL);
   const sudoFillUrls = parseUrlList("RINKA_SUDO_FILL_URLS", env.RINKA_SUDO_FILL_URLS);
+  // sudo有効時にallowlist空は起動拒否（fail-closed。仕様会議第3回・2026-11-28採決）
+  if (sudoFill && sudoFillUrls.length === 0) {
+    throw new Error("rinka: RINKA_SUDO_FILL=1 のときは RINKA_SUDO_FILL_URLS に許可URLを列挙してください（空のallowlistでの全URL許可は廃止・起動拒否）");
+  }
   const fillMaxBytes = intRange("RINKA_FILL_MAX_BYTES", env.RINKA_FILL_MAX_BYTES, 4096, 1, 65536);
   const macroBudgetSec = intRange("RINKA_MACRO_BUDGET_SECONDS", env.RINKA_MACRO_BUDGET_SECONDS, 300, 1, 86400);
 

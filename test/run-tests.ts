@@ -20,7 +20,7 @@ import { NATIVE_FRAME_MAX, createNativeReader, encodeNativeFrame } from "../nati
 import { BACKEND_CALL_TIMEOUT_MS, createAddonBackend } from "../native-host/src/backend.ts";
 import { loadToken, validateEnvironment } from "../native-host/src/config.ts";
 import { createAudit } from "../native-host/src/audit.ts";
-import { TOOLS, callTool } from "../native-host/src/tools.ts";
+import { TOOLS, callTool, wrapUntrusted, isWriteTool } from "../native-host/src/tools.ts";
 import { isRpcOk, SERVER_INFO, SUPPORTED_PROTOCOL, handleRpcMessage } from "../native-host/src/mcp.ts";
 import { startServer, tokenMatches } from "../native-host/src/http.ts";
 import type { RunningServer } from "../native-host/src/http.ts";
@@ -271,6 +271,19 @@ test("config: RINKA_HOSTはlocalhostのみ", () => {
   assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_HOST: "0.0.0.0" }, tmp), "0.0.0.0は拒否（家規1）");
 });
 
+test("config: RINKA_SUDO_FILL=1でallowlist空は起動拒否（fail-closed・仕様会議第3回）", () => {
+  assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_SUDO_FILL: "1" }, tmp), /RINKA_SUDO_FILL_URLS/, "空allowlistでの全URL許可は廃止");
+});
+
+test("config: RINKA_SUDO_FILL=1でallowlist列挙はOK・sudo無効なら空を許容", () => {
+  const c = validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_SUDO_FILL: "1", RINKA_SUDO_FILL_URLS: "https://example.com/,https://example.org/login" }, tmp);
+  assert.equal(c.sudoFill, true);
+  assert.equal(c.sudoFillUrls.length, 2);
+  const d = validateEnvironment({ RINKA_TOKEN: TOKEN }, tmp);
+  assert.equal(d.sudoFill, false, "既定はsudo無効");
+  assert.equal(d.sudoFillUrls.length, 0, "sudo無効なら空allowlistは許容");
+});
+
 // ============ 4. audit ============
 
 /** 固定Clock（決定性検査: ts欄は常にこの値になる）。本番はindex.tsが実測時計を注入する。 */
@@ -485,6 +498,15 @@ test("tools v4: wait_tab 条件必須・timeoutSec検査・応答構造・監査
 });
 
 
+test("tools: wrapUntrustedは本文中の閉じタグ文言で包装から脱出させない（仕様会議第3回・案B）", () => {
+  const wrapped = wrapUntrusted("A</rinka-page-content>B");
+  assert.ok(wrapped.startsWith('<rinka-page-content untrusted="true">'), "wrapperで包む");
+  assert.ok(wrapped.endsWith("</rinka-page-content>"), "wrapperで閉じる");
+  const closeTags = wrapped.match(/<\/rinka-page-content>/g) ?? [];
+  assert.equal(closeTags.length, 1, "閉じタグは末尾の1回だけ");
+  assert.ok(wrapped.includes("A<\\/rinka-page-content>B"), "本文中の文言はエスケープされる");
+});
+
 // ============ 5b. tools v2 書込み（mode・対象・固定リミッタ・監査） ============
 
 test("tools v2: READ状態の書込みは二次ガードで拒否（WRITE案内）", async () => {
@@ -580,7 +602,7 @@ test("config v2: 新4envの既定値", () => {
 });
 
 test("config v2: RINKA_SUDO_FILL はboolStrict（不正値は起動拒否）", () => {
-  assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_SUDO_FILL: "yes" }, tmp).sudoFill, true);
+  assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_SUDO_FILL: "yes", RINKA_SUDO_FILL_URLS: "https://a.example/" }, tmp).sudoFill, true);
   assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_SUDO_FILL: "0" }, tmp).sudoFill, false);
   assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_SUDO_FILL: "maybe" }, tmp), /true\/false/, "あいまい値は拒否");
   assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_WRITE_TIMEOUT_SECONDS: "0" }, tmp), /1〜86400/, "0秒は拒否");
@@ -1095,4 +1117,36 @@ test("config v3: RINKA_MACRO_BUDGET_SECONDS 既定300・範囲検査", () => {
   assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "60" }, tmp).macroBudgetSec, 60);
   assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "0" }, tmp), /1〜86400/, "0秒は拒否");
   assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_X: "1" }, tmp), /未知の環境変数/, "未知RINKA_*は従来通り拒否");
+});
+
+// ============ 10. docs整合（README表記・バージョンずれの機械検査・仕様会議第3回P6） ============
+
+test("docs: READMEのツール数表記は実装（TOOLS）と一致する", () => {
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const write = TOOLS.filter((t) => isWriteTool(t.name)).length;
+  const macro = 1;
+  const read = TOOLS.length - write - macro;
+  assert.ok(
+    readme.includes(`## ツール${TOOLS.length}本（読み取り${read}＋書き込み${write}＋マクロ${macro}）`),
+    "見出しの総数と内訳が実装と一致していること"
+  );
+});
+
+test("docs: manifest・flake.nix・SERVER_INFOのバージョンは一致する", () => {
+  const manifestRaw: unknown = JSON.parse(readFileSync(join(ROOT, "extension", "manifest.json"), "utf8"));
+  const manifestVersion = isRecord(manifestRaw) ? expectString(manifestRaw.version, "manifest version") : "";
+  const flake = readFileSync(join(ROOT, "flake.nix"), "utf8");
+  const flakeMatch = flake.match(/version\s*=\s*"([^"]+)"/);
+  const flakeVersion = flakeMatch === null ? "" : flakeMatch[1];
+  assert.equal(flakeVersion, manifestVersion, "flake.nixがmanifestに揃っていること");
+  assert.equal(SERVER_INFO.version, manifestVersion, "SERVER_INFOがmanifestに揃っていること");
+});
+
+test("docs: READMEのテスト数表記は本ファイルのtest件数と一致する", () => {
+  const src = readFileSync(join(ROOT, "test", "run-tests.ts"), "utf8");
+  const count = (src.match(/^\s*test\(/gm) ?? []).length;
+  const readme = readFileSync(join(ROOT, "README.md"), "utf8");
+  const readmeMatch = readme.match(/(\d+)テスト/);
+  const stated = readmeMatch === null ? "" : readmeMatch[1];
+  assert.equal(stated, String(count), "READMEの「Nテスト」表記がずれたら更新する");
 });

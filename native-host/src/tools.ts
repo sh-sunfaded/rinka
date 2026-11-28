@@ -337,9 +337,11 @@ const truncateBytes = (s: string, maxBytes: number): string => {
   return b.length <= maxBytes ? s : b.subarray(0, maxBytes).toString("utf8").replace(/\uFFFD$/, "");
 };
 
-/** ページ本文を信頼できないデータとして包む（家規7）。 */
+/** ページ本文を信頼できないデータとして包む（家規7）。本文中に包装の閉じタグと同じ文言が
+ *  含まれていても包装から脱出させない（仕様会議第3回・2026-11-28採決の案Bエスケープ）。 */
 export const wrapUntrusted = (text: string): string => {
-  return `<rinka-page-content untrusted="true">\n${text}\n</rinka-page-content>`;
+  const neutralized = text.split("</rinka-page-content").join("<\\/rinka-page-content");
+  return `<rinka-page-content untrusted="true">\n${neutralized}\n</rinka-page-content>`;
 };
 
 /** 構造一覧をJSONで包む。JSONは切ると構文が壊れて救えないため、上限超は切らずfail-closedで拒否する

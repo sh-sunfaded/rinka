@@ -69,7 +69,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 - **期待値（expect）**: 語彙は `urlContains` / `text`（read_tab）と `valueLengths`（page_fill）のみで、当該ステップの結果欄とだけ照合する。遷移系の応答は操作前スナップショットのため期待値評価に使わない
 - **監査**: 受付1行（名前・ステップ数・dryRunのみ）＋ステップ毎の既存監査行。実行時はレポート末尾に `list_tabs` の結果を同梱する（整合確認）
 
-ページ由来の本文・URL・タイトルは信頼できないデータ。ツールの説明に明記し、本文は `<rinka-page-content untrusted="true">` で包んで返す。
+ページ由来の本文・URL・タイトルは信頼できないデータ。ツールの説明に明記し、本文は `<rinka-page-content untrusted="true">` で包んで返す。本文中に包装の閉じタグと同じ文言が含まれていても包装から脱出しないようエスケープする（脱出防止）。
 
 操作系ツールの応答に含まれるタブURLは**実行前のスナップショット**（navigate直後のコミット前URLなど）。遷移の成否は `list_tabs` / `read_tab` の追い確認で判定する。
 
@@ -85,7 +85,7 @@ Vibe Work ──(HTTP+Bearer)── 127.0.0.1:8765/mcp ── native-host (node)
 
 - 書込み対象タブのURLは **http/httpsのみ**（about:/file:/chrome:/moz-extension:/data:/javascript:/view-source: への書込みは固定拒否）
 - `open_tab` / `navigate_tab` のURLもhttp/httpsのみ・2048字上限
-- **sudo fill**: password欄への `page_fill` は `RINKA_SUDO_FILL=1` が許可し、かつ `RINKA_SUDO_FILL_URLS`（カンマ区切り・空=全許可）の**境界照合**（origin完全一致＋パス境界。`startsWith` 不採用＝`bank.example.evil.com` 型バイパス対策）に通るときだけ実行。照合はexecuteScript内で行う
+- **sudo fill**: password欄への `page_fill` は `RINKA_SUDO_FILL=1` が許可し、かつ `RINKA_SUDO_FILL_URLS`（カンマ区切り。`RINKA_SUDO_FILL=1` のとき空は**起動拒否**・fail-closed）の**境界照合**（origin完全一致＋パス境界。`startsWith` 不採用＝`bank.example.evil.com` 型バイパス対策）に通るときだけ実行。照合はexecuteScript内で行う
 
 ## 既知の限界
 
@@ -116,7 +116,7 @@ Origin許可リスト（Vibe Workウェブ版対応）: http層はOriginが loca
 | --- | --- | --- |
 | `RINKA_WRITE_TIMEOUT_SECONDS` | 1800 | WRITE自動落ち秒数（1〜86400。書込みcmd毎にリセット） |
 | `RINKA_SUDO_FILL` | false | password欄へのfill許可（`1/true/yes` 以外は起動拒否・boolStrict） |
-| `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りallowlist（空=全URL許可。境界照合） |
+| `RINKA_SUDO_FILL_URLS` | 空 | sudo許可URLのカンマ区切りallowlist（`RINKA_SUDO_FILL=1` のとき空は起動拒否。境界照合） |
 | `RINKA_FILL_MAX_BYTES` | 4096 | fill値の1欄あたりバイト上限 |
 | `RINKA_MACRO_BUDGET_SECONDS` | 300 | `run_macro` の全体予算秒（1〜86400）。超過で打ち切り・部分レポート |
 
@@ -217,7 +217,7 @@ hostとportは `RINKA_HOST` / `RINKA_PORT` に従う（既定 `127.0.0.1:8765`�
 ## 開発
 
 ```sh
-node --experimental-strip-types --no-warnings test/run-tests.ts   # 61テスト（node:test / node:assert）
+node --experimental-strip-types --no-warnings test/run-tests.ts   # 77テスト（node:test / node:assert）
 bash tools/ts-style-check.sh                                      # 構文規約のgrep機械検査。exit 0 = 規約どおり
 ```
 
