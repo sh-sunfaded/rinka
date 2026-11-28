@@ -1092,3 +1092,7 @@ test("macro: 予算超過は打ち切って部分レポート（RINKA_MACRO_BUDG
 
 test("config v3: RINKA_MACRO_BUDGET_SECONDS 既定300・範囲検査", () => {
   assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN }, tmp).macroBudgetSec, 300, "既定300秒");
+  assert.equal(validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "60" }, tmp).macroBudgetSec, 60);
+  assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_SECONDS: "0" }, tmp), /1〜86400/, "0秒は拒否");
+  assert.throws(() => validateEnvironment({ RINKA_TOKEN: TOKEN, RINKA_MACRO_BUDGET_X: "1" }, tmp), /未知の環境変数/, "未知RINKA_*は従来通り拒否");
+});
